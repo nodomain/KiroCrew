@@ -1113,7 +1113,6 @@ test/test_slack_agent_passthrough.py
 test/test_slack_dashboard_live_sync.py
 test/test_slack_events_coverage.py
 test/test_slack_gateway.py
-test/test_slack_gateway_coverage.py
 test/test_slack_handler_coverage_branches.py
 test/test_slack_home_tab.py
 test/test_slack_inline_stop.py

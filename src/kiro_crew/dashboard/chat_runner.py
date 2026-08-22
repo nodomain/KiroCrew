@@ -5903,7 +5903,6 @@ async def _run_chat(
         ):
             await _probe_fallback_restore_for_slot(slot, client)
 
-        event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         state.broadcast_ws("chat_status", {"slot": slot.key, "status": "Thinking…"})
         state.broadcast_ws(
             "activity_event", {"slot": slot.key, "kind": "status", "text": "Thinking…"}
@@ -5985,6 +5984,9 @@ async def _run_chat(
         # first await) are one atomic span, strictly ordered w.r.t. close_all's
         # _closing set. Abort (lease released by the outer finally) if closing.
         try:
+            if monitor_completion is not None:
+                if not await monitor_completion.authorize():
+                    return
             state.sessions.begin_turn(session_key)
         except SessionClosingError:
             logger.info("Aborting dispatch for %s — gateway is shutting down", session_key)
@@ -6007,6 +6009,9 @@ async def _run_chat(
                 session_key,
             )
             return
+        if monitor_completion is not None:
+            monitor_completion.mark_accepted()
+        event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         async for event in event_stream:
             # Heartbeat every 5s during long operations
             if time.time() - last_heartbeat > 5:
