@@ -201,6 +201,16 @@ NATIVE_SUBAGENT_TERMINAL_TTL_SECS = 3600.0
 _MAX_PENDING_SUBAGENT_DELIVERIES = 128
 
 
+class _PendingSubagentDeliveries(list[str]):
+    """Claimed run ids plus the subset that owe an error tombstone."""
+
+    __slots__ = ("error_tombstone_ids",)
+
+    def __init__(self, agent_ids: list[str], error_tombstone_ids: set[str]) -> None:
+        super().__init__(agent_ids)
+        self.error_tombstone_ids = frozenset(error_tombstone_ids)
+
+
 def _delivery_key(content: str) -> str:
     """Identity of a queued completion for delivery bookkeeping.
 
@@ -2748,6 +2758,7 @@ class _ChatSlot:
         "_subagent_deliveries_inflight",
         "_subagents_inline_collected",
         "_subagent_delivery_pending",
+        "_subagent_error_tombstone_pending",
         "_recovery_retrigger_count",
         "_prompt_busy_retries",
         "_acp_pipe_death_retries",
@@ -3071,6 +3082,10 @@ class _ChatSlot:
         # retention TTL is measured from consumption rather than from run
         # completion (issue #4839). See ``take_pending_subagent_deliveries``.
         self._subagent_delivery_pending: dict[str, list[str]] = {}
+        # Subset of the delivery ledger whose legacy fallback outcome is an
+        # error. Keeping the kind beside the ids prevents consumption from
+        # shortening a failed run's retention as though it had completed.
+        self._subagent_error_tombstone_pending: dict[str, set[str]] = {}
         self._recovery_retrigger_count: int = 0
         self._prompt_busy_retries: int = 0
         self._acp_pipe_death_retries: int = 0
@@ -4126,7 +4141,13 @@ class _ChatSlot:
         """Pop a queue item by index. Returns {"id": ..., "content": ...}."""
         return self._queue.pop(index)
 
-    def note_pending_subagent_delivery(self, content: str, agent_ids: list[str]) -> None:
+    def note_pending_subagent_delivery(
+        self,
+        content: str,
+        agent_ids: list[str],
+        *,
+        error_tombstone_ids: set[str] | None = None,
+    ) -> None:
         """Record that a queued completion still owes *agent_ids* a delivery mark.
 
         Called by the gateway before a sub-agent completion is queued or
@@ -4158,8 +4179,13 @@ class _ChatSlot:
         key = _delivery_key(content)
         owed = self._subagent_delivery_pending.setdefault(key, [])
         owed.extend(a for a in agent_ids if a not in owed)
+        error_ids = set(error_tombstone_ids or ()).intersection(agent_ids)
+        if error_ids:
+            self._subagent_error_tombstone_pending.setdefault(key, set()).update(error_ids)
         while len(self._subagent_delivery_pending) > _MAX_PENDING_SUBAGENT_DELIVERIES:
-            self._subagent_delivery_pending.pop(next(iter(self._subagent_delivery_pending)))
+            evicted = next(iter(self._subagent_delivery_pending))
+            self._subagent_delivery_pending.pop(evicted)
+            self._subagent_error_tombstone_pending.pop(evicted, None)
 
     def owes_subagent_delivery(self, contents: list[str]) -> bool:
         """Whether any of *contents* still owes a delivery mark. Read-only.
@@ -4181,9 +4207,12 @@ class _ChatSlot:
         unsettled is re-announced as an orphan by the next start.
         """
         claimed: list[str] = []
+        error_ids: set[str] = set()
         for content in contents:
-            claimed.extend(self._subagent_delivery_pending.pop(_delivery_key(content), []))
-        return claimed
+            key = _delivery_key(content)
+            claimed.extend(self._subagent_delivery_pending.pop(key, []))
+            error_ids.update(self._subagent_error_tombstone_pending.pop(key, set()))
+        return _PendingSubagentDeliveries(claimed, error_ids.intersection(claimed))
 
     def queue_remove_by_id(self, queue_id: str) -> str | None:
         """Remove a queue item by ID. Returns the content or None if not found."""

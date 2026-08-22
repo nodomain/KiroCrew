@@ -30,17 +30,22 @@ The design under test separates all of them:
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew.run_coordinator import MemoryRunCoordinator
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 
 
 def _make_manager(max_concurrent: int = 4) -> SubagentManager:
     mgr = SubagentManager(
-        sessions=MagicMock(), ctx_builder=MagicMock(), max_concurrent=max_concurrent
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        max_concurrent=max_concurrent,
+        coordinator=MemoryRunCoordinator(),
     )
     mgr._fire_event = AsyncMock()
     mgr._write_tombstone = MagicMock()
@@ -440,7 +445,19 @@ async def test_cancel_all_readmits_an_undelivered_report_to_orphan_recovery(monk
     mgr = _make_manager()
     info = _info()
     cleared: list[str] = []
-    monkeypatch.setattr(mod, "clear_tombstone", lambda aid: (cleared.append(aid), True)[1])
+
+    event_loop_thread = threading.get_ident()
+
+    def _clear_tombstone(agent_id: str) -> bool:
+        assert threading.get_ident() != event_loop_thread
+        cleared.append(agent_id)
+        return True
+
+    monkeypatch.setattr(
+        mod,
+        "clear_tombstone_for_recovery",
+        _clear_tombstone,
+    )
 
     started = asyncio.Event()
 
@@ -480,7 +497,11 @@ async def test_cancel_all_keeps_the_tombstone_when_delivery_already_happened(mon
     mgr = _make_manager()
     info = _info()
     cleared: list[str] = []
-    monkeypatch.setattr(mod, "clear_tombstone", lambda aid: (cleared.append(aid), True)[1])
+    monkeypatch.setattr(
+        mod,
+        "clear_tombstone_for_recovery",
+        lambda aid: (cleared.append(aid), True)[1],
+    )
 
     delivered = asyncio.Event()
 
@@ -759,7 +780,7 @@ async def test_run_does_not_block_on_its_report_during_shutdown():
     # Must return promptly even though the injection is wedged.
     await asyncio.wait_for(mgr._run(info), timeout=5)
 
-    assert wedged.is_set(), "report never started"
+    await asyncio.wait_for(wedged.wait(), timeout=1)
     pending = [t for t in mgr._report_tasks if not t.done()]
     assert pending, "report should still be pending, owned by cancel_all's drain"
     for t in pending:
