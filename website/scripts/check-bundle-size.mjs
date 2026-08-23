@@ -43,8 +43,9 @@ export const CHUNK_BUDGETS = {
   // ceiling catches is a NEW library or surface landing in the catalog chunk.
   // The built-in App Store guidance adds one use-case and one configuration
   // string for each of 23 apps across all 12 shipped catalogs; the structured
-  // monitor form adds its labels to those same catalogs.
-  all: 10245 * KB, // measured 9756 KB after the structured-monitor labels
+  // monitor form and source-provider guidance add their labels to those same
+  // catalogs.
+  all: 10250 * KB, // measured 9762 KB after the source-provider guidance
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because
