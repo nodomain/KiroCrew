@@ -30,6 +30,9 @@ vi.mock('../apps/design-critique/api', () => ({
     send: vi.fn(),
     deleteSlot: vi.fn(),
     uploadFiles: vi.fn(),
+    discover: vi.fn(),
+    render: vi.fn(),
+    method: vi.fn(),
   },
   fileUrl: (p: string) => '/api/file-raw?path=' + encodeURIComponent(p),
 }))
@@ -40,6 +43,9 @@ const mockApi = designCritiqueApi as unknown as {
   send: Mock
   deleteSlot: Mock
   uploadFiles: Mock
+  discover: Mock
+  render: Mock
+  method: Mock
 }
 
 const DesignCritiquePage = (await import('../apps/design-critique/DesignCritiquePage')).default
@@ -139,6 +145,8 @@ beforeEach(() => {
   mockApi.send.mockResolvedValue(undefined)
   mockApi.deleteSlot.mockResolvedValue(undefined)
   mockApi.uploadFiles.mockResolvedValue({ paths: ['/tmp/shot-1.png'] })
+  mockApi.method.mockResolvedValue({ skill: '', checklist: '' })
+  mockApi.render.mockResolvedValue({ screens: [], couldNotSee: [] })
   // Default: the critic has not answered yet, so a poll loop keeps going until a
   // test says otherwise.
   mockApi.getSlot.mockResolvedValue({ running: true, messages: [] })
@@ -170,7 +178,7 @@ describe('Design Critique — first visit', () => {
   it('reaps a slot left behind by an earlier visit but spares a live run', () => {
     localStorage.setItem(SLOTSKEY, JSON.stringify(['stray-1', 'resumable-1', 'live-1']))
     localStorage.setItem(JOBKEY, JSON.stringify({
-      'resumable-1': { stage: 'scanning', slotKey: 'resumable-1', kind: 'repo', ts: Date.now() },
+      'resumable-1': { stage: 'analyzing', slotKey: 'resumable-1', screens: [], ts: Date.now() },
     }))
     localStorage.setItem(LIVEKEY, JSON.stringify([{ k: 'live-1', ts: Date.now() }]))
 
@@ -618,22 +626,27 @@ describe('Design Critique — critiquing a reference', () => {
   })
 
   it('discovers the screens, then critiques only the picked flow', async () => {
-    mockApi.getSlot.mockResolvedValue(assistantJson(DISCOVERY))
+    mockApi.discover.mockResolvedValue({ ...DISCOVERY, handle: 'clone-1' })
     start('https://github.com/acme/widgets')
 
     await tick()
-    expect(screen.getByText('Looking for screens to audit')).toBeInTheDocument()
-
-    await tick(POLL_MS)
     expect(screen.getByText('What should I audit?')).toBeInTheDocument()
     expect(screen.getByText(/2 screens found · 2 I can render/)).toBeInTheDocument()
     expect(screen.getByText('React + Vite')).toBeInTheDocument()
     // The observed flow presets the pick, in its own order.
     expect(screen.getAllByRole('checkbox', { checked: true })).toHaveLength(2)
 
-    // The brief travels with the scoped run, and the same slot is reused.
+    // The brief travels with the scoped run; the backend renders, then the agent
+    // critiques the rendered PNGs on a fresh slot.
     fireEvent.change(screen.getByPlaceholderText(/who is it for/), {
       target: { value: 'first-time buyers' },
+    })
+    mockApi.render.mockResolvedValue({
+      screens: [
+        { step: 1, label: 'Cart', path: '/tmp/cart.png' },
+        { step: 2, label: 'Payment', path: '/tmp/pay.png' },
+      ],
+      couldNotSee: [],
     })
     mockApi.getSlot.mockResolvedValue(assistantJson(ONE_SCREEN_REPORT))
     fireEvent.click(screen.getByRole('button', { name: /Critique this flow · 2 screens/ }))
@@ -645,9 +658,9 @@ describe('Design Critique — critiquing a reference', () => {
   })
 
   it('narrows the pick to one screen and says what it will do', async () => {
-    mockApi.getSlot.mockResolvedValue(assistantJson(DISCOVERY))
+    mockApi.discover.mockResolvedValue({ ...DISCOVERY, handle: 'clone-1' })
     start('https://github.com/acme/widgets')
-    await tick(POLL_MS)
+    await tick()
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Cart/ }))
 
@@ -660,9 +673,9 @@ describe('Design Critique — critiquing a reference', () => {
   })
 
   it('reorders the picked screens, since the order is the walk order', async () => {
-    mockApi.getSlot.mockResolvedValue(assistantJson(DISCOVERY))
+    mockApi.discover.mockResolvedValue({ ...DISCOVERY, handle: 'clone-1' })
     start('https://github.com/acme/widgets')
-    await tick(POLL_MS)
+    await tick()
 
     const cart = screen.getByRole('checkbox', { name: /Cart/ })
     // Cart is picked first, so its "move later" swaps it with Payment. The rows
@@ -680,17 +693,16 @@ describe('Design Critique — critiquing a reference', () => {
   })
 
   it('explains a blocked reference and offers the access steps', async () => {
-    mockApi.getSlot.mockResolvedValue(assistantJson({
+    mockApi.discover.mockResolvedValue({
       blocked: { reason: 'no-access', detail: 'HTTP 404 from github.com' },
-    }))
+      screens: [], flows: [],
+    })
     start('https://github.com/acme/private-thing')
-    await tick(POLL_MS)
+    await tick()
 
     expect(screen.getByText('I couldn’t get in')).toBeInTheDocument()
     expect(screen.getByText(/It’s either private/)).toBeInTheDocument()
     expect(screen.getByText('HTTP 404 from github.com')).toBeInTheDocument()
-    // The slot is released as soon as the run is known to be over.
-    expect(mockApi.deleteSlot).toHaveBeenCalledWith('slot-1')
 
     fireEvent.click(screen.getByRole('button', { name: 'Fix my access' }))
     expect(screen.getByText(/Git access is set up per machine/)).toBeInTheDocument()
@@ -698,11 +710,11 @@ describe('Design Critique — critiquing a reference', () => {
   })
 
   it('says it got in but found nothing renderable, using the critic\'s own note', async () => {
-    mockApi.getSlot.mockResolvedValue(assistantJson({
-      screens: [], cannotSee: ['Every route needs a running server.'],
-    }))
+    mockApi.discover.mockResolvedValue({
+      screens: [], cannotSee: ['Every route needs a running server.'], flows: [],
+    })
     start('https://github.com/acme/widgets')
-    await tick(POLL_MS)
+    await tick()
 
     expect(screen.getByText('Every route needs a running server.')).toBeInTheDocument()
   })

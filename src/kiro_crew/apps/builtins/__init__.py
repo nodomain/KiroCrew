@@ -7,6 +7,7 @@ BUILTIN_NAMES: list[str] = [
     "aws_control",
     "code_review_sage",
     "crew_companion",
+    "design_critique",
     "issue_radar",
     "meetings",
     "ops_mission_control",

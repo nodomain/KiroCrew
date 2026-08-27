@@ -14,7 +14,7 @@ import {
   loadHistory, saveHistory, beginPendingCritique, dropPendingCritique, loadJobs, saveJob, clearJob, loadSlots, saveSlots, trackSlot, untrackSlot,
   loadLive, markLive, unmarkLive,
 } from './utils'
-import { IMAGES_PROMPT, DISCOVER_PROMPT, SCOPED_PROMPT, ASK_CONTEXT, ASK_PROMPT } from './prompts'
+import { IMAGES_PROMPT, ASK_CONTEXT, ASK_PROMPT } from './prompts'
 import { useReduceMotion, useNarrow, useToasts } from './hooks'
 import FindingRow from './FindingRow'
 import WaitingScreen from './WaitingScreen'
@@ -24,7 +24,6 @@ import AskLayer from './AskLayer'
 import type {
   Ask,
   Blocked,
-  BlockedInfo,
   DiscoveryScreen,
   Finding,
   Flow,
@@ -39,16 +38,6 @@ import type {
 } from './types'
 
 import { i18nT } from '../../i18n/t'
-// Raw discovery JSON (STEP 1) before it's filtered into a Scope.
-interface DiscoveryInfo {
-  framework?: string
-  note?: string
-  blocked?: BlockedInfo | null
-  screens?: DiscoveryScreen[]
-  flows?: Flow[]
-  cannotSee?: string[]
-}
-
 // Errors flagged with why the poll loop gave up — distinguishes navigate-away and
 // timeout (both resumable) from a real failure.
 type Flagged = Error & { cancelled?: boolean; timeout?: boolean }
@@ -61,6 +50,14 @@ export default function DesignCritiquePage() {
   const [picked, setPicked] = useState<string[]>([])
   const [refBrief, setRefBrief] = useState('')
   const [slot, setSlot] = useState('')
+  // The backend render handle + target for a reference (repo/local/url) run, so
+  // step 2 can render without re-cloning and without a chat slot doing the work.
+  const [refHandle, setRefHandle] = useState('')
+  const [refTarget, setRefTarget] = useState<{ kind: string; value: string } | null>(null)
+  // Critique method text, fetched once from the backend and reused.
+  const methodRef = useRef('')
+  // In-flight backend discover/render call, so a cancel/new-run aborts it server-side.
+  const abortRef = useRef<AbortController | null>(null)
   // slotKey is carried so the chip resolves the entry belonging to THIS run:
   // a second critique finishing first takes history index 0, and annotating
   // through the chip would then write onto the wrong critique's entry.
@@ -207,6 +204,19 @@ export default function DesignCritiquePage() {
   const send = (slotKey: string, message: string) => designCritiqueApi.send(slotKey, message)
   const dropSlot = (slotKey: string) => { if (!slotKey) return; untrackSlot(slotKey); unmarkLive(slotKey); designCritiqueApi.deleteSlot(slotKey) }
 
+  // Fetch the critique method once and cache it; on failure the critique still
+  // runs on the persona alone rather than blocking.
+  const loadMethod = async (): Promise<string> => {
+    if (methodRef.current) return methodRef.current
+    try {
+      const m = await designCritiqueApi.method()
+      // Inline only the checklist rubric — NOT the full skill, whose shell/fs_read
+      // steps would contradict this tool-free critique path.
+      methodRef.current = (m && m.checklist) || ''
+    } catch { methodRef.current = '' }
+    return methodRef.current
+  }
+
   const showReport = (raw: Report, screens: Screen[], entry?: HistoryEntry) => {
     // Also normalise on the way IN, not just on the way out of a run: entries
     // written to dc-history-v1 before this guard existed can still hold a
@@ -334,23 +344,27 @@ export default function DesignCritiquePage() {
     if (!files.length) { setErr(i18nT('apps.designCritique.designCritiquePage.those_weren_t_image_files')); setPhase('error'); return }
     if (files.length > 20) { setErr(i18nT('apps.designCritique.designCritiquePage.that_s_more_than_20_screens_send_fewer')); setPhase('error'); return }
     const seq = ++runSeqRef.current
+    abortRef.current?.abort()
     setErr(''); setBlocked(null); setShowAuth(false); setMenuOpen(false); startClock(); setWriting(false); setPendingKind(null); setPhase('uploading')
     try {
       const { paths } = await designCritiqueApi.uploadFiles(files)
       if (!paths || !paths.length) throw new Error('no file paths returned')
       const uploaded = paths.map((p, i) => ({ step: i + 1, label: 'Screen ' + (i + 1), url: fileUrl(p) }))
-      // If `+ New` ran while this upload was in flight, a later run owns the
-      // screen: keep critiquing in the background rather than stealing it back.
+      // Do the slow method fetch BEFORE deciding ownership, then re-check the run
+      // sequence: if `+ New` ran while the upload/method-fetch was in flight, a
+      // later run owns the screen — keep critiquing in the background rather than
+      // stealing foreground ownership back (which would strand the current run).
+      const method = await loadMethod()
       const mine = runSeqRef.current === seq
       if (mine) { setCurrent({ report: null, screens: uploaded }); setScreenIdx(0); setPhase('analyzing') }
-      await ask(IMAGES_PROMPT(paths), uploaded, mine)
+      await ask(IMAGES_PROMPT(paths, undefined, method), uploaded, mine)
     } catch (e) {
       // No slot exists yet at this point; ask() owns cleanup for the one it creates.
       if (runSeqRef.current === seq) { setErr(e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.something_went_wrong')); setPhase('error') }
     }
   }
 
-  // A Figma link, a repo, or a local package. Step 1: find out what's in there.
+  // A Figma link, a repo, or a local package. Step 1: the backend finds what's in there.
   const runRef = async (raw: string) => {
     const det = detectKind(raw)
     if (!det) return
@@ -358,37 +372,34 @@ export default function DesignCritiquePage() {
       setErr('I couldn’t tell what that is. Give me a Figma link, a GitHub/GitLab/Bitbucket repo, an absolute local path, or a URL that’s already serving.')
       setPhase('error'); return
     }
+    const seq = ++runSeqRef.current
+    abortRef.current?.abort()
+    const ac = new AbortController()
+    abortRef.current = ac
     setErr(''); setBlocked(null); setShowAuth(false); setMenuOpen(false); startClock(); setWriting(false); setPendingKind(det.kind)
     setCurrent({ report: null, screens: [] }); setScreenIdx(0); setScope(null); setPicked([])
+    setRefHandle(''); setRefTarget({ kind: det.kind, value: det.value })
+    // No chat slot drives discovery any more, so nothing may claim the screen as
+    // its foreground run while the backend works.
+    activeSlotRef.current = ''
     setPhase('scanning')
-    let slotKey = ''
     try {
-      slotKey = await openSlot()
-      activeSlotRef.current = slotKey; setSlot(slotKey)
-      saveJob({ stage: 'scanning', slotKey, kind: det.kind, value: det.value, ts: Date.now() })
-      await send(slotKey, DISCOVER_PROMPT(det.kind, det.value))
-      const info = await pollForReport<DiscoveryInfo>(slotKey)
-      const list = Array.isArray(info.screens) ? info.screens.filter(s => s && s.id) : []
+      const info = await designCritiqueApi.discover(det.kind, det.value, ac.signal)
+      if (runSeqRef.current !== seq) return
       if (info.blocked && info.blocked.reason) {
-        endRun(slotKey); setSlot('')
-        // `detail` comes from the model and is rendered as a React child, so an
-        // object here would crash the route rather than show the blocked screen.
         const d = info.blocked.detail
         setBlocked({
           ...(BLOCKED[info.blocked.reason] || BLOCKED.other),
-          detail: typeof d === 'string' ? d : typeof d === 'number' && Number.isFinite(d) ? String(d) : '',
+          detail: typeof d === 'string' ? d : '',
         })
         setPhase('error'); return
       }
+      const list = Array.isArray(info.screens) ? info.screens.filter(s => s && s.id) : []
       if (!list.length) {
-        endRun(slotKey); setSlot('')
         setErr(discoveryNote(info) ||
           'I got in, but there’s nothing in there I can render. Drop screenshots instead.')
         setPhase('error'); return
       }
-      // Normalise before anything reads it: Array.isArray(flows) proves the
-      // container is a list, not that its elements are usable, and a reply of
-      // flows:[null] used to crash the picker on f.screenIds.
       const norm = normalizeScope({ ...info, screens: list }) || { ...info, screens: list, flows: [] }
       setScope(norm)
       const first = norm.flows[0]
@@ -396,26 +407,69 @@ export default function DesignCritiquePage() {
         ? first.screenIds.filter(id => list.some(s => s.id === id))
         : list.filter(s => s.canSee !== false).map(s => s.id)
       setPicked(preset)
-      saveJob({ stage: 'scoping', slotKey, kind: det.kind, value: det.value, ts: Date.now(),
-        scope: norm, picked: preset })
+      // A synthetic key stands in for the (now absent) discovery slot so the
+      // scoping job can be persisted, cancelled and resumed exactly as before.
+      const jobKey = 'ref-' + Date.now()
+      setSlot(jobKey)
+      setRefHandle(info.handle || '')
+      saveJob({ stage: 'scoping', slotKey: jobKey, kind: det.kind, value: det.value, ts: Date.now(), scope: norm, picked: preset, handle: info.handle })
       setPhase('scoping')
-    } catch (e) { setSlot(''); failWith(e, slotKey) }
+    } catch (e) {
+      if (runSeqRef.current !== seq) return
+      const flag = e as Flagged
+      if (flag && flag.cancelled) return
+      if (e instanceof DOMException && e.name === 'AbortError') return
+      setErr(e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.that_scan_didn_t_finish'))
+      setPhase('error')
+    }
   }
 
-  // Step 2: critique only what was picked, in the picked order, reusing the same slot.
+  // Step 2: the backend renders the picked screens to PNGs, then the agent
+  // critiques those finished images with no tools — the same tool-free path a
+  // screenshot upload uses, so it can never stall on a tool-approval prompt.
   const runScoped = async () => {
-    if (!scope || !picked.length || !slot) return
+    if (!scope || !picked.length || !refTarget) return
     const byId = new Map(scope.screens.map(s => [s.id, s]))
     const picks = picked.map(id => byId.get(id)).filter(Boolean) as DiscoveryScreen[]
+    const jobKey = slot
+    const seq = ++runSeqRef.current
+    abortRef.current?.abort()
+    const ac = new AbortController()
+    abortRef.current = ac
     startClock(); setWriting(false); setPhase('analyzing')
-    activeSlotRef.current = slot
     try {
-      saveJob({ stage: 'analyzing', slotKey: slot, screens: [], ts: Date.now() })
-      await send(slot, SCOPED_PROMPT(picks, refBrief))
-      const rep = await pollForReport<Report>(slot)
-      finishReport(slot, [], rep)
+      const out = await designCritiqueApi.render({
+        kind: refTarget.kind, value: refTarget.value, handle: refHandle,
+        picks: picks.map(p => ({ id: p.id, label: p.label, ref: p.ref })),
+      }, ac.signal)
+      if (runSeqRef.current !== seq) return
+      const rendered = Array.isArray(out.screens) ? out.screens.filter(s => s && s.path) : []
+      if (!rendered.length) {
+        setErr(i18nT('apps.designCritique.designCritiquePage.that_critique_didn_t_finish'))
+        setPhase('error'); return
+      }
+      // The scoping job is finished; the critique below opens its own slot + job.
+      if (jobKey) { clearJob(jobKey); dropSlot(jobKey) }
       setSlot('')
-    } catch (e) { const k = slot; setSlot(''); failWith(e, k) }
+      const paths = rendered.map(s => s.path)
+      const uploaded = rendered.map((s, i) => ({ step: i + 1, label: s.label, url: fileUrl(s.path) }))
+      const missed = Array.isArray(out.couldNotSee) ? out.couldNotSee : []
+      // Load the method BEFORE claiming ownership, then re-check the run sequence:
+      // if `+ New` ran while scoping/method-fetch was in flight, a later run owns
+      // the screen — keep critiquing in the background rather than stealing the
+      // foreground back (which would strand the current run).
+      const method = await loadMethod()
+      const mine = runSeqRef.current === seq
+      if (mine) { setCurrent({ report: null, screens: uploaded }); setScreenIdx(0) }
+      await ask(IMAGES_PROMPT(paths, refBrief, method, missed), uploaded, mine)
+    } catch (e) {
+      if (runSeqRef.current !== seq) return
+      const flag = e as Flagged
+      if (flag && flag.cancelled) return
+      if (e instanceof DOMException && e.name === 'AbortError') return
+      setErr(e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.something_went_wrong'))
+      setPhase('error')
+    }
   }
 
   // Reap slots we created and never cleaned up. Runs before resume so the live job is spared.
@@ -451,44 +505,17 @@ export default function DesignCritiquePage() {
       setPicked(Array.isArray(job.picked) ? job.picked : [])
       setRefBrief(job.refBrief || '')
       setPendingKind(job.kind || null)
+      setRefHandle(job.handle || '')
+      if (job.kind && job.value) setRefTarget({ kind: job.kind, value: job.value })
       setCurrent({ report: null, screens: [] })
       setPhase('scoping')
       return
     }
 
     if (job.stage === 'scanning') {
-      setSlot(job.slotKey); setPendingKind(job.kind || null)
-      setCurrent({ report: null, screens: [] }); startClock(job.ts); setPhase('scanning')
-      ;(async () => {
-        try {
-          const info = await pollForReport<DiscoveryInfo>(job.slotKey)
-          const list = Array.isArray(info.screens) ? info.screens.filter(s => s && s.id) : []
-          if (!list.length) {
-            endRun(job.slotKey); setSlot('')
-            setErr(discoveryNote(info) ||
-              'I couldn’t find any screens I can render in there. Drop screenshots instead.')
-            setPhase('error'); return
-          }
-          const sc: Scope = normalizeScope({ ...info, screens: list })
-            || { ...info, screens: list, flows: [] }
-          const first = sc.flows[0]
-          const preset = first && first.screenIds && first.screenIds.length
-            ? first.screenIds.filter(id => list.some(s => s.id === id))
-            : list.filter(s => s.canSee !== false).map(s => s.id)
-          setScope(sc); setPicked(preset)
-          saveJob({ stage: 'scoping', slotKey: job.slotKey, kind: job.kind, value: job.value, ts: job.ts, scope: sc, picked: preset })
-          setPhase('scoping')
-        } catch (e) {
-          const flag = e as Flagged
-          if (flag && flag.cancelled) return
-          if (flag && flag.timeout) {
-            setErr(i18nT('apps.designCritique.designCritiquePage.still_scanning_it_s_kept_running_come_back_to_th'))
-            setPhase('error'); return
-          }
-          endRun(job.slotKey); setSlot('')
-          setErr(e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.that_scan_didn_t_finish')); setPhase('error')
-        }
-      })()
+      // Discovery is a backend call now, not a slot poll, so a scan persisted by
+      // an older build cannot be resumed. Drop it and let the user start again.
+      clearJob(job.slotKey); dropSlot(job.slotKey)
       return
     }
 
@@ -526,7 +553,7 @@ export default function DesignCritiquePage() {
   // Keep the persisted pick in sync while you're deciding, so a reorder isn't lost.
   useEffect(() => {
     if (phase !== 'scoping' || !scope || !slot) return
-    saveJob({ stage: 'scoping', slotKey: slot, kind: pendingKind, ts: Date.now(), scope, picked, refBrief })
+    saveJob({ stage: 'scoping', slotKey: slot, kind: pendingKind, value: refTarget?.value, ts: Date.now(), scope, picked, refBrief, handle: refHandle })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [picked, refBrief, phase])
 
@@ -692,6 +719,7 @@ export default function DesignCritiquePage() {
   }
 
   const cancelRun = () => {
+    abortRef.current?.abort()
     if (askSlotRef.current) { dropSlot(askSlotRef.current); askSlotRef.current = '' }
     const k = activeSlotRef.current || slot
     // Cancel THIS run only, and clear only its job record: a bare clearJob()
@@ -712,16 +740,23 @@ export default function DesignCritiquePage() {
     // pending row it earned could never resolve on its own. Treating it as
     // not-running routes it into the cleanup below, which ends it.
     const running = phase === 'analyzing' || phase === 'uploading'
+    abortRef.current?.abort()
     // Supersede anything mid-upload: it has no slot yet, so this counter is the
     // only way it can learn it no longer owns the screen.
     runSeqRef.current++
     clearStaged()
     if (running) {
-      // The run is not cancelled, so give it a row in "Your critiques" with a
-      // loading state. Without this the critique would keep running invisibly
-      // and look like it had been thrown away.
-      const k = activeSlotRef.current || slot
-      if (k) setCritiques(beginPendingCritique(k, (current && current.screens) || []))
+      const k = activeSlotRef.current
+      if (k) {
+        // A real critique slot is in flight: keep it and show a pending row that
+        // its own poller will fill in when it finishes.
+        setCritiques(beginPendingCritique(k, (current && current.screens) || []))
+      } else if (slot) {
+        // Ref discovery/render phase: the synthetic scoping key has no poller, so a
+        // pending row could never resolve (a permanent-pending run). abortRef.abort()
+        // above already cancelled the backend call — just drop the scoping state.
+        clearJob(slot); setSlot(''); setScope(null); setPicked([]); setRefBrief('')
+      }
     }
     // Clear the job record too. Dropping only the slot would leave the run
     // persisted, so a reload would resume a critique the user had explicitly

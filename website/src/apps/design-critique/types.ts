@@ -141,6 +141,8 @@ export interface Job {
   scope?: Scope
   picked?: string[]
   refBrief?: string
+  // The backend render handle (clone id or local:/url: marker) for a scoping job.
+  handle?: string
 }
 
 // A screenshot staged in the composer, not sent yet.
