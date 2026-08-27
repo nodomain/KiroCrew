@@ -193,4 +193,72 @@ contextBridge.exposeInMainWorld("crewCompanion", {
     ipcRenderer.on("crew-companion:panel-opened", handler);
     return () => ipcRenderer.removeListener("crew-companion:panel-opened", handler);
   },
+
+  // ── Single-avatar / cross-display drag ──────────────────────────────────────
+  // The avatar lives on one display at a time. The main process tells each overlay
+  // whether it is the active one, and owns the handoff when the avatar is dragged
+  // across a screen boundary (only the global cursor crosses a window edge).
+
+  /**
+   * Begin a cross-display drag. offset = cursor screen point − sprite top-left, so
+   * the main process can place the avatar under the cursor as it leaves this window.
+   */
+  dragStart(offsetX, offsetY) {
+    ipcRenderer.send("crew-companion:drag-start", offsetX | 0, offsetY | 0);
+  },
+
+  /** Explicit drag end (e.g. window blur). */
+  dragEnd() {
+    ipcRenderer.send("crew-companion:drag-end");
+  },
+
+  /** A mouseup this overlay saw; ends the drag wherever the cursor now is. */
+  dragMouseUp() {
+    ipcRenderer.send("crew-companion:drag-mouseup");
+  },
+
+  /**
+   * This overlay became active or inactive. When active during a live handoff the
+   * callback also receives the entry point and isDragging, so the renderer can
+   * resume the drag in flight. cb(active, localX?, localY?, isDragging?).
+   */
+  onSetActive(cb) {
+    const handler = (_e, active, x, y, isDragging) => cb(active, x, y, isDragging);
+    ipcRenderer.on("crew-companion:set-active", handler);
+    return () => ipcRenderer.removeListener("crew-companion:set-active", handler);
+  },
+
+  /** Per-frame avatar position while dragging on this (active) display. */
+  onDragUpdate(cb) {
+    const handler = (_e, x, y) => cb(x, y);
+    ipcRenderer.on("crew-companion:drag-update", handler);
+    return () => ipcRenderer.removeListener("crew-companion:drag-update", handler);
+  },
+
+  /** Final avatar position when the drag ends; run the edge-snap animation. */
+  onDragEnded(cb) {
+    const handler = (_e, x, y) => cb(x, y);
+    ipcRenderer.on("crew-companion:drag-ended", handler);
+    return () => ipcRenderer.removeListener("crew-companion:drag-ended", handler);
+  },
+
+  /**
+   * Broadcast to every overlay at drag-start: listen for a global mouseup and
+   * report it via dragMouseUp, so the drag ends even if the cursor released over a
+   * different display than the one that started it.
+   */
+  onDragListenMouseUp(cb) {
+    const handler = () => cb();
+    ipcRenderer.on("crew-companion:drag-listen-mouseup", handler);
+    return () => ipcRenderer.removeListener("crew-companion:drag-listen-mouseup", handler);
+  },
+
+  /**
+   * Tell main this overlay's active-state listener is mounted, so main replies with
+   * set-active. This is the reliable half of the activation handshake: the main
+   * process's initial send may fire before this renderer subscribes.
+   */
+  petReady() {
+    ipcRenderer.send("crew-companion:pet-ready");
+  },
 });

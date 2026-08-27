@@ -47,6 +47,18 @@ type Preload = {
   galleryOpen?(): void
   galleryClose?(): void
   turnOff?(): void
+
+  // ── Single-active-overlay + cross-display drag hand-off ─────────────────────
+  // The main process picks ONE active display and drives these; every other
+  // overlay is told inactive so only one companion is ever drawn.
+  onSetActive?(cb: (active: boolean, x?: number, y?: number, isDragging?: boolean) => void): () => void
+  dragStart?(offsetX: number, offsetY: number): void
+  dragEnd?(): void
+  dragMouseUp?(): void
+  onDragUpdate?(cb: (x: number, y: number) => void): () => void
+  onDragEnded?(cb: (x: number, y: number) => void): () => void
+  onDragListenMouseUp?(cb: () => void): () => void
+  petReady?(): void
 }
 
 function preload(): Preload | undefined {
@@ -93,10 +105,17 @@ export interface PackDetail {
 export interface PetBridge {
   getWindowPosition?: () => Promise<{ x: number; y: number } | null>
   savePosition?: (x: number, y: number) => void
+  /** Main -> overlay: this display is (in)active; x,y,isDragging ride a live hand-off. */
+  onSetActive?: (cb: (active: boolean, x?: number, y?: number, isDragging?: boolean) => void) => () => void
   dragStart?: (offsetX: number, offsetY: number) => void
   dragEnd?: () => void
+  /** Renderer -> main: the drag's mouseup fired on this overlay. */
+  dragMouseUp?: () => void
   onDragUpdate?: (cb: (x: number, y: number) => void) => (() => void) | undefined
   onDragEnded?: (cb: (x: number, y: number) => void) => (() => void) | undefined
+  /** Main -> overlay at drag-start: attach a window mouseup that calls dragMouseUp. */
+  onDragListenMouseUp?: (cb: () => void) => () => void
+  petReady?: () => void
   /**
    * Report the companion's and bubble's hitboxes to the main process.
    *
@@ -453,21 +472,37 @@ export const petBridge: PetBridge = {
   },
 
   /**
-   * Cross-display drag hooks.
+   * Single-active-overlay + cross-display drag hand-off.
    *
-   * In the desktop app the main process polled the cursor so a drag could carry the
-   * pet onto another monitor. Here each display has its own overlay, so a drag is
-   * handled entirely within the one the pointer is in — these stay undefined and the
-   * hook's optional calls (`api?.dragStart?.()`) simply do nothing, which is the
-   * single-display path it already supports.
-   *
-   * Left named and documented rather than deleted so the gap is visible: without
-   * them, dragging the companion to a second monitor stops at the screen edge.
+   * The main process now picks ONE active display and drives these, so only that
+   * overlay draws a companion and a drag can carry the pet onto another monitor.
+   * Each delegates to the preload bridge; subscribes hand back its unsubscribe, or a
+   * no-op when the page is open in an ordinary browser with no bridge.
    */
-  dragStart: undefined,
-  dragEnd: undefined,
-  onDragUpdate: undefined,
-  onDragEnded: undefined,
+  onSetActive(cb) {
+    return preload()?.onSetActive?.(cb) ?? (() => {})
+  },
+  dragStart(offsetX, offsetY) {
+    preload()?.dragStart?.(offsetX, offsetY)
+  },
+  dragEnd() {
+    preload()?.dragEnd?.()
+  },
+  dragMouseUp() {
+    preload()?.dragMouseUp?.()
+  },
+  onDragUpdate(cb) {
+    return preload()?.onDragUpdate?.(cb) ?? (() => {})
+  },
+  onDragEnded(cb) {
+    return preload()?.onDragEnded?.(cb) ?? (() => {})
+  },
+  onDragListenMouseUp(cb) {
+    return preload()?.onDragListenMouseUp?.(cb) ?? (() => {})
+  },
+  petReady() {
+    preload()?.petReady?.()
+  },
 
   // Walk commands are renderer-driven for now (the wander calls walkPath directly),
   // so the main process emits none of these yet. Left undefined and documented, like

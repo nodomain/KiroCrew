@@ -12,9 +12,19 @@
  * `pointer-events: none` on the body, enabling it only on the companion itself.
  * `forward: true` is what still lets the renderer SEE the cursor move, which is how
  * it knows when the pointer is over the sprite.
+ *
+ * SINGLE AVATAR ACROSS DISPLAYS. There is still one overlay per display, but the
+ * avatar lives on exactly ONE of them at a time (`activeDisplayId`); every other
+ * overlay is told it is inactive and renders nothing, so a multi-monitor user sees
+ * one companion, not one per screen. The avatar is moved to another display ONLY by
+ * dragging it across the screen boundary — it does NOT follow the cursor at rest.
+ * The main process owns the cross-display handoff because mousemove events stop at a
+ * window edge and only `screen.getCursorScreenPoint()` can follow a drag between
+ * displays.
  */
 
 const path = require("path");
+const fs = require("fs");
 const { app, BrowserWindow, screen, ipcMain } = require("electron");
 const { companionPageUrl } = require("./pageUrl");
 
@@ -35,8 +45,24 @@ const lastIgnore = new Map();
 /** ~60fps, matching the desktop app's cursor poll. */
 const HITBOX_POLL_MS = 16;
 
+/** Pet box, matching the renderer's sprite size (shared constant PET_W/PET_H = 128). */
+const PET_W = 128;
+const PET_H = 128;
+
+/** Force-stop a drag that never saw a mouseup (window blur, lost event). */
+const DRAG_SAFETY_MS = 10_000;
+
 let pollTimer = null;
 let ipcRegistered = false;
+
+/** Which display currently hosts the single avatar. @type {number|null} */
+let activeDisplayId = null;
+
+/** Cross-display drag state, owned entirely by the main process. */
+let dragPollTimer = null;
+let dragSafetyTimer = null;
+let dragOffsetX = 0;
+let dragOffsetY = 0;
 
 let baseUrl = "";
 let credential = "";
@@ -69,6 +95,273 @@ function assertHostStaysInDock() {
   } catch {
     /* older Electron / already regular */
   }
+}
+
+// ── Position persistence ────────────────────────────────────────────────────
+// Remembered in Electron's userData dir (the shell cannot resolve the gateway's
+// data dir). Shape + 0600 mode mirror the reference implementation.
+
+function petPosPath() {
+  return path.join(app.getPath("userData"), "crew-companion-pet-position.json");
+}
+
+/** @type {{displayId?:number}|null} */
+let savedPetPos = null;
+try {
+  savedPetPos = JSON.parse(fs.readFileSync(petPosPath(), "utf-8"));
+} catch {
+  /* first run / unreadable — fall back to a computed start position */
+}
+
+// Only the DISPLAY the avatar lives on is persisted here, for restart election; its
+// on-screen x/y is owned by the renderer (petBridge.savePosition/getWindowPosition).
+function savePetPos(displayId) {
+  savedPetPos = { displayId };
+  try {
+    fs.writeFileSync(petPosPath(), JSON.stringify(savedPetPos), { mode: 0o600 });
+  } catch {
+    /* a failed position write must never break the companion */
+  }
+}
+
+// ── Display geometry (reference logic, verbatim) ─────────────────────────────
+
+function findDisplayAtPoint(sx, sy) {
+  return (
+    screen.getAllDisplays().find(
+      (d) =>
+        sx >= d.bounds.x &&
+        sx < d.bounds.x + d.bounds.width &&
+        sy >= d.bounds.y &&
+        sy < d.bounds.y + d.bounds.height,
+    ) || null
+  );
+}
+
+/** Nearest display by squared edge distance — the fallback for a cursor in a gap. */
+function findNearestDisplay(sx, sy) {
+  const displays = screen.getAllDisplays();
+  let best = displays[0];
+  let bestDist = Infinity;
+  for (const d of displays) {
+    const dx = Math.max(d.bounds.x - sx, 0, sx - (d.bounds.x + d.bounds.width));
+    const dy = Math.max(d.bounds.y - sy, 0, sy - (d.bounds.y + d.bounds.height));
+    const dist = dx * dx + dy * dy;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = d;
+    }
+  }
+  return best;
+}
+
+/** Clamp a local position: the avatar may hang half off left/right, never off top/bottom. */
+function clampLocal(localX, localY, bounds) {
+  return {
+    x: Math.max(-PET_W / 2, Math.min(bounds.width - PET_W / 2, localX)),
+    y: Math.max(0, Math.min(bounds.height - PET_H, localY)),
+  };
+}
+
+// ── The handoff ──────────────────────────────────────────────────────────────
+
+/**
+ * Move the avatar to another display's overlay. The old overlay is told it is no
+ * longer active (so it stops rendering) and returns to click-through — unless a
+ * drag is in flight, which manages ignore-mouse across every overlay itself.
+ */
+function transferActiveToDisplay(targetDisplayId, localX, localY, isDragging = false) {
+  const newWin = overlays.get(targetDisplayId);
+  // Never hand the avatar to a display with no live overlay — e.g. a monitor
+  // hot-plugged after startup that the drag poll selected. Deactivating the
+  // current overlay for a target that cannot render would leave NO avatar on
+  // screen, so keep it where it is until an overlay exists for that display.
+  if (!newWin || newWin.isDestroyed()) return;
+
+  if (activeDisplayId !== null && activeDisplayId !== targetDisplayId) {
+    const oldWin = overlays.get(activeDisplayId);
+    if (oldWin && !oldWin.isDestroyed()) {
+      oldWin.webContents.send("crew-companion:set-active", false);
+      if (!isDragging) oldWin.setIgnoreMouseEvents(true, { forward: true });
+    }
+  }
+
+  activeDisplayId = targetDisplayId;
+  // Drop any stale rect so the poll's null-hitbox safety net holds for the few
+  // frames until the renderer re-reports on the new display.
+  hitboxes.delete(newWin);
+  lastIgnore.delete(newWin);
+  newWin.webContents.send("crew-companion:set-active", true, localX, localY, isDragging);
+}
+
+// ── Cross-display drag poll ───────────────────────────────────────────────────
+// Runs only while a drag is in flight. It follows the GLOBAL cursor (the only thing
+// that crosses a window edge) and hands the avatar to whichever display the cursor
+// is over. There is no at-rest cursor following — this timer exists solely for the
+// duration of a drag.
+
+function startDragPolling(offsetX, offsetY) {
+  stopDragPolling();
+  dragOffsetX = offsetX;
+  dragOffsetY = offsetY;
+
+  // Every overlay must accept mouse events so whichever display the cursor ends
+  // over can report the mouseup that ends the drag.
+  for (const win of overlays.values()) {
+    if (win && !win.isDestroyed()) win.setIgnoreMouseEvents(false);
+  }
+  broadcastToPets("crew-companion:drag-listen-mouseup");
+
+  dragSafetyTimer = setTimeout(() => {
+    if (dragPollTimer !== null) stopDragPolling();
+  }, DRAG_SAFETY_MS);
+  dragSafetyTimer.unref?.();
+
+  dragPollTimer = setInterval(dragPollOnce, HITBOX_POLL_MS);
+  dragPollTimer.unref?.();
+}
+
+/**
+ * One cross-display drag tick: follow the GLOBAL cursor (the only thing that crosses
+ * a window edge) and hand the avatar to the display it is over, streaming the local
+ * position to the active overlay in between. Split out from the interval so a drag
+ * can be driven deterministically in tests.
+ */
+function dragPollOnce() {
+  let cursor;
+  try {
+    cursor = screen.getCursorScreenPoint();
+  } catch {
+    return;
+  }
+  const petScreenX = cursor.x - dragOffsetX;
+  const petScreenY = cursor.y - dragOffsetY;
+
+  const target =
+    findDisplayAtPoint(cursor.x, cursor.y) || findNearestDisplay(cursor.x, cursor.y);
+  const localX = petScreenX - target.bounds.x;
+  const localY = petScreenY - target.bounds.y;
+
+  // Crossing a screen boundary hands the avatar to the new display AT the crossing
+  // point — but only if that display actually has an overlay. A display hot-plugged
+  // after enable has none (nothing opens one), so transferring there would no-op
+  // while savePetPos hammered fs.writeFileSync ~60x/sec on the main thread and the
+  // avatar froze. In that case fall through and keep streaming to the active overlay,
+  // clamped to its OWN display's edge, so the avatar tracks the cursor instead.
+  if (target.id !== activeDisplayId && overlays.has(target.id)) {
+    transferActiveToDisplay(target.id, localX, localY, true);
+    savePetPos(target.id);
+    return;
+  }
+
+  const activeDisplay =
+    screen.getAllDisplays().find((d) => d.id === activeDisplayId) || target;
+  const clamped = clampLocal(
+    petScreenX - activeDisplay.bounds.x,
+    petScreenY - activeDisplay.bounds.y,
+    activeDisplay.bounds,
+  );
+  const win = overlays.get(activeDisplayId);
+  if (win && !win.isDestroyed()) {
+    win.webContents.send("crew-companion:drag-update", clamped.x, clamped.y);
+  }
+}
+
+function stopDragPolling() {
+  if (dragPollTimer === null) return;
+  // One last transfer check before stopping: an avatar released the instant it
+  // crosses to a new display would otherwise snap back to the last-polled display,
+  // because the interval is cleared before the next tick runs that final transfer.
+  try {
+    dragPollOnce();
+  } catch {
+    /* windows torn down mid-drag — nothing to transfer */
+  }
+  clearInterval(dragPollTimer);
+  dragPollTimer = null;
+  if (dragSafetyTimer !== null) {
+    clearTimeout(dragSafetyTimer);
+    dragSafetyTimer = null;
+  }
+
+  // Final position, so the renderer can run its edge-snap animation.
+  let cursor;
+  try {
+    cursor = screen.getCursorScreenPoint();
+  } catch {
+    cursor = null;
+  }
+  if (cursor && activeDisplayId !== null) {
+    const display = screen.getAllDisplays().find((d) => d.id === activeDisplayId);
+    if (display) {
+      const clamped = clampLocal(
+        cursor.x - dragOffsetX - display.bounds.x,
+        cursor.y - dragOffsetY - display.bounds.y,
+        display.bounds,
+      );
+      const win = overlays.get(activeDisplayId);
+      if (win && !win.isDestroyed()) {
+        win.webContents.send("crew-companion:drag-ended", clamped.x, clamped.y);
+      }
+      savePetPos(activeDisplayId);
+    }
+  }
+
+  // CRITICAL: restore ignore-mouse on ALL overlays. The hitbox poll switches the
+  // active overlay back to interactive once the renderer reports a real rect.
+  for (const win of overlays.values()) {
+    if (win && !win.isDestroyed()) win.setIgnoreMouseEvents(true, { forward: true });
+    lastIgnore.set(win, true);
+  }
+}
+
+/**
+ * Send an overlay its current active state. Used for the initial reveal and —
+ * crucially — as the reply to `crew-companion:pet-ready`, which the renderer sends
+ * once its onSetActive listener is mounted. That handshake replaces a fixed timer:
+ * a slow renderer (e.g. a long theme load) could otherwise miss every set-active
+ * and stay hidden forever.
+ */
+function sendActiveStateTo(win, knownDisplayId = null) {
+  if (!win || win.isDestroyed()) return;
+  let displayId = knownDisplayId;
+  if (displayId === null) {
+    for (const [id, w] of overlays) {
+      if (w === win) {
+        displayId = id;
+        break;
+      }
+    }
+  }
+  if (displayId === null) return;
+  if (displayId !== activeDisplayId) {
+    win.webContents.send("crew-companion:set-active", false);
+    return;
+  }
+  // During an active drag, stamp the activation with the LIVE drag coordinates and
+  // isDragging=true. A slow target renderer that missed the transfer IPC would
+  // otherwise treat a bare activation as at-rest and clear the carried bubble after
+  // the shared cursor already advanced past it (dropping the reminder). With the drag
+  // state attached the renderer adopts the in-flight drag instead of clearing.
+  if (dragPollTimer !== null) {
+    try {
+      const cursor = screen.getCursorScreenPoint();
+      const display = screen.getAllDisplays().find((d) => d.id === activeDisplayId);
+      if (display) {
+        win.webContents.send(
+          "crew-companion:set-active",
+          true,
+          cursor.x - dragOffsetX - display.bounds.x,
+          cursor.y - dragOffsetY - display.bounds.y,
+          true,
+        );
+        return;
+      }
+    } catch {
+      /* cursor unavailable — fall through to a bare activation */
+    }
+  }
+  win.webContents.send("crew-companion:set-active", true);
 }
 
 function createOverlayFor(display) {
@@ -130,9 +423,20 @@ function createOverlayFor(display) {
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
   win.loadURL(companionPageUrl(baseUrl, "pet.html", credential));
-  win.once("ready-to-show", () => {
+  // Activation handshake. The renderer draws NOTHING until it receives
+  // set-active(true); we send the flag BEFORE revealing so the avatar only ever
+  // appears on the active overlay. This first send is a best-effort fast path — the
+  // RELIABLE delivery is the renderer's `crew-companion:pet-ready` (sent once its
+  // listener is mounted), answered via sendActiveStateTo. That replaces the old
+  // fixed 300ms re-send, which lost the event entirely if the renderer's effect
+  // mounted later (e.g. a slow theme load) and left the avatar hidden forever.
+  win.webContents.on("did-finish-load", () => {
     if (win.isDestroyed()) return;
-    win.showInactive();
+    // Route through the one drag-aware choke so a reveal landing mid-drag carries the
+    // drag state rather than a bare activation that would clear the carried bubble.
+    // Pass the known display id: the overlay is not in the map yet at did-finish-load.
+    sendActiveStateTo(win, display.id);
+    if (!win.isVisible()) win.showInactive();
     // Showing this accessory-shaped window demotes the app to a Dock-less accessory
     // on macOS; put the host back in the Dock (see assertHostStaysInDock).
     assertHostStaysInDock();
@@ -145,18 +449,44 @@ function createOverlayFor(display) {
   return win;
 }
 
-/** Open an overlay on every display. Idempotent per display. */
+/**
+ * Open an overlay on every display, but designate exactly ONE as active (the avatar
+ * lives there). Active display = the one holding the saved position, else the
+ * display under the cursor, else the primary. Idempotent per display.
+ */
 function openPetWindow() {
   if (!baseUrl) {
     log("crew-companion: no gateway origin yet, deferring overlay");
     return;
   }
-  for (const display of screen.getAllDisplays()) {
+
+  const primary = screen.getPrimaryDisplay();
+  const displays = screen.getAllDisplays();
+
+  activeDisplayId = savedPetPos && typeof savedPetPos.displayId === "number"
+    ? savedPetPos.displayId
+    : null;
+  if (activeDisplayId === null || !displays.some((d) => d.id === activeDisplayId)) {
+    let cur = { x: primary.bounds.x, y: primary.bounds.y };
+    try {
+      cur = screen.getCursorScreenPoint();
+    } catch {
+      /* headless / test — fall back to primary */
+    }
+    activeDisplayId = (findDisplayAtPoint(cur.x, cur.y) || primary).id;
+  }
+  for (const display of displays) {
     const existing = overlays.get(display.id);
     if (existing && !existing.isDestroyed()) continue;
     try {
-      overlays.set(display.id, createOverlayFor(display));
-      log(`crew-companion: overlay opened on display ${display.id}`);
+      overlays.set(
+        display.id,
+        createOverlayFor(display),
+      );
+      log(
+        `crew-companion: overlay opened on display ${display.id}` +
+          (display.id === activeDisplayId ? " (active)" : ""),
+      );
     } catch (err) {
       log(`crew-companion: overlay failed on display ${display.id} — ${err && err.message}`);
     }
@@ -165,10 +495,12 @@ function openPetWindow() {
 
 /** Close every overlay. Idempotent. */
 function closePetWindow() {
+  stopDragPolling();
   for (const [id, win] of [...overlays]) {
     overlays.delete(id);
     if (win && !win.isDestroyed()) win.destroy();
   }
+  activeDisplayId = null;
 }
 
 function petWindowCount() {
@@ -266,17 +598,32 @@ function refreshOverlayInput(win, cursor) {
   return shouldIgnore;
 }
 
-/** One poll iteration across every overlay. The interval calls this. */
+/**
+ * One poll iteration. Only the ACTIVE overlay is interactive at rest; every other
+ * overlay stays click-through because it hosts no avatar. The drag poll owns
+ * ignore-mouse across all overlays while a drag is in flight, so this yields to it.
+ * There is no at-rest cursor following.
+ */
 function pollOverlayInputOnce() {
+  if (dragPollTimer !== null) return; // drag poll owns ignore-mouse during a drag
   let cursor;
   try {
     cursor = screen.getCursorScreenPoint();
   } catch {
     return; // no cursor available (e.g. under test) — nothing to do
   }
+  const activeWin = activeDisplayId !== null ? overlays.get(activeDisplayId) : null;
   for (const win of overlays.values()) {
     try {
-      refreshOverlayInput(win, cursor);
+      if (win === activeWin) {
+        refreshOverlayInput(win, cursor);
+      } else if (win && !win.isDestroyed()) {
+        // A non-active overlay never hosts the avatar, so it stays click-through.
+        if (lastIgnore.get(win) !== true) {
+          lastIgnore.set(win, true);
+          win.setIgnoreMouseEvents(true, { forward: true });
+        }
+      }
     } catch {
       /* window torn down between checks — skip it */
     }
@@ -298,9 +645,9 @@ function stopHitboxPoll() {
 }
 
 /**
- * Register the overlay's cursor-hitbox IPC and start the poll. Called once from
- * `initCrewCompanion`. Each renderer reports its own window's rects; the sender is
- * resolved back to its overlay so one display's report cannot describe another's.
+ * Register the overlay's cursor-hitbox and drag IPC and start the poll. Called once
+ * from `initCrewCompanion`. Each renderer reports its own window's rects; the sender
+ * is resolved back to its overlay so one display's report cannot describe another's.
  */
 function registerOverlayIpc() {
   if (ipcRegistered) return;
@@ -314,6 +661,31 @@ function registerOverlayIpc() {
   ipcMain.on("crew-companion:menu-hitbox", (event, rect) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win && isPetWindow(win)) setWindowMenuHitbox(win, rect);
+  });
+
+  // Cross-display drag: the renderer reports the drag start (with the cursor->sprite
+  // offset) and end; the main process follows the global cursor in between and hands
+  // the avatar between displays. ANY overlay reporting a mouseup ends the drag,
+  // because after a handoff the cursor may be over a different overlay than the one
+  // that started the gesture.
+  ipcMain.on("crew-companion:drag-start", (event, offsetX, offsetY) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && isPetWindow(win)) startDragPolling(offsetX || 0, offsetY || 0);
+  });
+  ipcMain.on("crew-companion:drag-end", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && isPetWindow(win)) stopDragPolling();
+  });
+  ipcMain.on("crew-companion:drag-mouseup", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && isPetWindow(win) && dragPollTimer !== null) stopDragPolling();
+  });
+
+  // The renderer sends this once its onSetActive listener is mounted; reply with
+  // this overlay's current active state so a slow renderer never misses activation.
+  ipcMain.on("crew-companion:pet-ready", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && isPetWindow(win)) sendActiveStateTo(win);
   });
 
   startHitboxPoll();
@@ -330,6 +702,10 @@ module.exports = {
   setOverlayTarget,
   registerOverlayIpc,
   stopHitboxPoll,
+  transferActiveToDisplay,
+  startDragPolling,
+  stopDragPolling,
+  dragPollOnce,
   // Exported for tests: they drive the toggle directly rather than through the
   // live cursor poll.
   pointInRect,
@@ -338,4 +714,10 @@ module.exports = {
   pollOverlayInputOnce,
   setWindowHitbox,
   setWindowMenuHitbox,
+  // Exported for tests: pure geometry decisions.
+  _findDisplayAtPoint: findDisplayAtPoint,
+  _findNearestDisplay: findNearestDisplay,
+  _clampLocal: clampLocal,
+  PET_W,
+  PET_H,
 };

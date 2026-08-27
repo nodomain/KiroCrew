@@ -14,7 +14,7 @@
  * session socket drives.
  */
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
-import { waitFor, fireEvent } from '@testing-library/react'
+import { waitFor, fireEvent, act } from '@testing-library/react'
 
 import { PENDING_PATH, PRESENCE_PATH } from '../apps/crew-companion/constants'
 import type { SessionWatchOptions } from '../apps/crew-companion/sessionWatch'
@@ -47,6 +47,20 @@ const bridge = {
   updateHitbox: vi.fn(),
   setMenuHitbox: vi.fn(),
   contextMenuAction: vi.fn(),
+  // Single-active-overlay model: the pet renders only once main tells it it is the
+  // active display. Simulate the active overlay so these render assertions hold
+  // (a background overlay would receive false and draw nothing).
+  onSetActive: vi.fn((cb: (active: boolean, x?: number, y?: number, isDragging?: boolean) => void) => {
+    setActiveCb = cb
+    cb(true)
+    return () => {}
+  }),
+  onDragListenMouseUp: vi.fn(() => () => {}),
+  onDragUpdate: vi.fn(() => () => {}),
+  onDragEnded: vi.fn(() => () => {}),
+  dragStart: vi.fn(),
+  dragEnd: vi.fn(),
+  dragMouseUp: vi.fn(),
 }
 vi.mock('../apps/crew-companion/petBridge', () => ({ petBridge: bridge }))
 // Both harnesses re-import the entry per test with `vi.resetModules()`, and the
@@ -64,6 +78,8 @@ vi.mock('../i18n/all', async () => await import('../i18n/index'))
 
 /** The gateway socket is replaced by a handle on the callbacks the overlay passes. */
 let watch: SessionWatchOptions | null = null
+/** The last set-active callback the overlay registered, so a test can drive a hand-off. */
+let setActiveCb: ((active: boolean, x?: number, y?: number, isDragging?: boolean) => void) | null = null
 vi.mock('../apps/crew-companion/sessionWatch', () => ({
   watchSessions: (opts: SessionWatchOptions) => {
     watch = opts
@@ -211,6 +227,7 @@ function tapPet(at = { x: 340, y: 240 }): void {
 beforeEach(() => {
   calls = []
   watch = null
+  setActiveCb = null
   panelClosedCbs = []
   galleryOpenedCbs = []
   galleryClosedCbs = []
@@ -790,6 +807,60 @@ describe('the active appearance pack', () => {
     galleryOpenedCbs[galleryOpenedCbs.length - 1]()
     galleryClosedCbs[galleryClosedCbs.length - 1]()
     expect(petEl()).not.toBeNull()
+  })
+})
+
+describe('the reminder bubble is attached to the avatar across a display hand-off', () => {
+  it('persists the shown reminder AND its slot metadata the moment it appears', async () => {
+    queue([fire({ seq: 4, kind: 'reminder', text: 'stretch' })])
+    await mountPet()
+    await waitFor(() => expect(bubbleText()).toBe('stretch'))
+    // Written synchronously with the bubble, not by a later effect: a drag that hands
+    // the avatar to another display in the same tick must find the current reminder.
+    const stored = JSON.parse(window.localStorage.getItem('cc:currentBubble') ?? 'null')
+    expect(stored?.bubble?.text).toBe('stretch')
+    // The slot rides along so a sticky hold clock (`at`) and collapse `count` survive
+    // the hand-off instead of being renewed on the landing display.
+    expect(typeof stored?.slot?.at).toBe('number')
+  })
+
+  it('adopts the stored reminder and its ORIGINAL slot when dragged onto this display', async () => {
+    queue([])
+    await mountPet()
+    // The overlay we took the avatar from persisted this before the boundary crossing —
+    // a sticky approval whose hold clock started 80s ago, not now.
+    const startedAt = Date.now() - 80_000
+    window.localStorage.setItem(
+      'cc:currentBubble',
+      JSON.stringify({
+        bubble: { seq: -1, kind: 'approval', text: 'carried over' },
+        slot: { text: 'carried over', sticky: true, count: 1, at: startedAt, kind: 'approval' },
+      }),
+    )
+    // Main hands the avatar here mid-drag (isDragging = true, with a landing point).
+    act(() => setActiveCb?.(true, 120, 120, true))
+    await waitFor(() => expect(bubbleText()).toBe('carried over'))
+    // The adopt restored the slot verbatim (it did not rewrite the store), so the
+    // original hold-start `at` is intact — not renewed to the hand-off moment.
+    const after = JSON.parse(window.localStorage.getItem('cc:currentBubble') ?? 'null')
+    expect(after?.slot?.at).toBe(startedAt)
+  })
+
+  it('clears a stale stored reminder when activated showing nothing', async () => {
+    queue([])
+    await mountPet()
+    window.localStorage.setItem(
+      'cc:currentBubble',
+      JSON.stringify({
+        bubble: { seq: -1, kind: 'reminder', text: 'left over' },
+        slot: { text: 'left over', sticky: false, count: 1, at: Date.now(), kind: 'reminder' },
+      }),
+    )
+    // A non-drag (re-)election owns the store but shows nothing, so it must not leave a
+    // value a later hand-off would carry as a phantom bubble.
+    act(() => setActiveCb?.(true))
+    await waitFor(() => expect(window.localStorage.getItem('cc:currentBubble')).toBeNull())
+    expect(bubbleText()).toBeNull()
   })
 })
 
