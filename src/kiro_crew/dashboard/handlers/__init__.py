@@ -595,10 +595,13 @@ def _list_aim_prompts() -> list[dict[str, Any]]:
     return [dict(p) for p in result]
 
 
-# This-crew AgentCore Gateway catalog (owner dashboard). Identity GET/PUT
-# lands in a later PR.
+# This-crew AgentCore Gateway catalog + identity (owner dashboard).
 from kiro_crew.dashboard.handlers.agentcore_consent import (  # noqa: E402, F401
     api_agentcore_consent_get,
+)
+from kiro_crew.dashboard.handlers.agentcore_identity import (  # noqa: E402, F401
+    api_agentcore_identity_get,
+    api_agentcore_identity_save,
 )
 from kiro_crew.dashboard.handlers.agentcore_inspect import (  # noqa: E402, F401
     api_agentcore_gateway_get,

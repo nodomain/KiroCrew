@@ -122,12 +122,13 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/computer-use/config", handlers.api_computer_use_config_get)
     app.router.add_put("/api/computer-use/config", handlers.api_computer_use_config_save)
 
-    # This-crew AgentCore Gateway catalog (owner dashboard). Identity GET/PUT
-    # and consent are a later PR.
+    # This-crew AgentCore Gateway catalog + identity (owner dashboard).
     app.router.add_get("/api/agentcore/gateway", handlers.api_agentcore_gateway_get)
     app.router.add_post("/api/agentcore/gateway/verify", handlers.api_agentcore_gateway_verify)
     app.router.add_post("/api/agentcore/gateway/sync", handlers.api_agentcore_gateway_sync)
     app.router.add_get("/api/agentcore/consent", handlers.api_agentcore_consent_get)
+    app.router.add_get("/api/agentcore/identity", handlers.api_agentcore_identity_get)
+    app.router.add_put("/api/agentcore/identity", handlers.api_agentcore_identity_save)
 
     # Paid-AWS-service consent (Settings > Voice). Browser-called and
     # cookie-authed like the computer-use pair above, and for the same reason:
