@@ -108,7 +108,16 @@ jobs:
       # install never runs with the Bedrock credentials in its environment.
       - name: Install review CLI
         if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
-        run: npm install -g @openai/codex
+        # Installed from a committed lockfile (`npm ci`), not resolved from the
+        # registry at job time: this job holds Bedrock credentials and reads PR
+        # content, so the exact code that executes here -- and its whole
+        # dependency closure -- must change only by a commit to this repo. Same
+        # reasoning as this repo's SHA-pinning policy for actions (zizmor
+        # adhoc-packages); a bare `npm install -g pkg@X` still re-resolves the
+        # package's own dependencies on every run, which the lockfile pins.
+        # The manifest lives in .github/review-cli -- bump it deliberately per
+        # the note in its package.json.
+        run: npm ci --prefix .github/review-cli
 
       # ubuntu-24.04 runners restrict unprivileged user namespaces via AppArmor,
       # which makes the review CLI's bundled bubblewrap sandbox fail at netns setup.
@@ -516,7 +525,11 @@ jobs:
 
             rm -f "codex-pass-${pass}.md"
             rc=0
-            codex exec \
+            # Called by path, not from PATH: exporting the bin directory
+            # through $GITHUB_PATH is a run-step write to an environment
+            # file, which is an execution vector in a job holding Bedrock
+            # credentials (zizmor github-env).
+            .github/review-cli/node_modules/.bin/codex exec \
               --sandbox read-only \
               --output-last-message "codex-pass-${pass}.md" \
               "$PROMPT" || rc=$?
