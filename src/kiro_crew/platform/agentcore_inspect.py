@@ -389,9 +389,11 @@ def _merge_target_detail(stub: dict[str, Any], detail: dict[str, Any]) -> None:
     reasons = inner.get("statusReasons") or inner.get("status_reasons")
     if isinstance(reasons, list):
         stub["status_reasons"] = [str(item) for item in reasons if item]
-    if _authorization_url(inner):
-        # Consent URL allowlist is a later PR. Do not surface an IdP URL yet.
-        stub["authorization_url"] = None
+    auth_url = _authorization_url(inner)
+    if auth_url:
+        from kiro_crew.security import allow_agentcore_consent_url
+
+        stub["authorization_url"] = auth_url if allow_agentcore_consent_url(auth_url) else None
     stub["syncable"] = (
         stub["listing_mode"] == LISTING_DEFAULT
         and status in _SYNCABLE_STATUSES

@@ -348,10 +348,13 @@ cannot ride the next non-user turn. Channel dispatchers can pass
 session key. `tool_input` cannot supply `subject` / `userId` —
 `reject_tool_input_identity` refuses those kwargs.
 
-Workload Gateway MCP is injected only on `session/new` as the live
-loopback SigV4 listen URL. It is never written into the agent file.
-The unsigned https Gateway hostname is never injected. Login inbound
-sidecars are a later stack PR.
+Workload Gateway MCP is injected only on `session/new`. It is never
+written into the agent file. Workload injects the live loopback SigV4
+listen URL; the unsigned https Gateway hostname is never injected.
+Login posture writes a `0600` inbound sidecar (JWT or URL-only OAuth
+challenge) and `session/new` reads it; unattended login sessions never
+attach. Expiry recycles the live ACP child before a new sidecar is
+written.
 
 ## Stop Orchestration
 

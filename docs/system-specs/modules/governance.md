@@ -2156,7 +2156,12 @@ is a known value. The public `DefaultAgentIdentityProvider` is disabled, so a
 standalone host with no policy is unchanged. Standalone boot may swap
 `agent_identity` for the optional AWS adapter when that extra is opted in.
 Workload rebuild / `session/new` consult this row for Gateway MCP inject
-onto a localhost SigV4 proxy. Login attach is a later stack PR. Naming the
+onto a localhost SigV4 proxy. Login posture writes a per-session `0600`
+inbound sidecar (JWT or URL-only OAuth challenge) after bind, withholds
+non-managed MCP at rebuild, and never attaches for unattended
+(`cron:` / `subagent:`) sessions. Consent URLs are allowlisted through
+`security.allow_agentcore_consent_url` (the operator-OAuth keystone plus
+the builtin set). Naming the
 row here is what lets a policy pin the capability before those chokepoints
 land.
 

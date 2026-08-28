@@ -8584,6 +8584,38 @@ def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
     return False
 
 
+def allow_agentcore_consent_url(url: str) -> bool:
+    """True when *url* is an HTTPS, no-port, exact-match allowlisted consent endpoint.
+
+    Reuses the operator-OAuth keystone (``oauth_endpoints.json``) plus the
+    code-owned builtin set. An unknown host, explicit port, userinfo,
+    fragment, or non-HTTPS scheme is refused. Query strings are ignored for
+    the identity match (host + path only); they are not a second allowlist
+    axis. There is no second AgentCore keystone file.
+    """
+    if not isinstance(url, str):
+        return False
+    stripped = url.strip()
+    if not stripped:
+        return False
+    try:
+        parsed = urlparse(stripped)
+    except ValueError:
+        return False
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        return False
+    try:
+        if parsed.port is not None:
+            return False
+    except ValueError:
+        return False
+    if "@" in parsed.netloc:
+        return False
+    if parsed.params or ";" in parsed.path or parsed.fragment:
+        return False
+    return _approved_oauth_authorization_endpoint(parsed.hostname.lower(), parsed.path)
+
+
 # S3 presigned URLs contain X-Amz-Signature (a 64-char hex string) that
 # matches the base64-like blob pattern above.  These are intentional
 # time-limited access tokens, not leaked credentials.  Skip the exfil

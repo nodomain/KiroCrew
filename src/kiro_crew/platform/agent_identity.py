@@ -8,8 +8,8 @@ user.
 
 A companion may *annotate* (attach a verified JWT) through
 ``AgentIdentityProvider.annotate_principal``. It may not replace ``subject``.
-Gateway inbound attach is a later stack PR — this module only derives,
-annotates, and stores.
+After bind, login posture attaches a per-session inbound sidecar (or
+withholds it). Workload posture clears leftover sidecars.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from kiro_crew.constants import (
     SUBAGENT_COMPLETION_PREFIX,
 )
 from kiro_crew.platform.context import (
+    PlatformCompositionError,
     async_safe_context_call,
     current_context,
 )
@@ -182,11 +183,42 @@ async def bind_session_principal(
 
     ``sessions.set_principal`` is the SessionManager hook; a stub without it
     is a no-op store so identity binding can never break a turn.
-    Gateway inbound attach is a later stack PR.
     """
     principal = derive_session_principal(surface=surface, raw_id=raw_id, session_key=session_key)
     annotated = await apply_principal_annotation(principal)
-    setter = getattr(sessions, "set_principal", None)
-    if callable(setter):
-        setter(session_key, annotated)
+    try:
+        setter = getattr(sessions, "set_principal", None)
+        if callable(setter):
+            setter(session_key, annotated)
+        from kiro_crew.platform.agentcore_gateway import attach_gateway_inbound
+
+        # Do not drain the provider this turn just acquired: expiry recycle
+        # belongs to the next idle boundary, not post-get_or_create bind.
+        await attach_gateway_inbound(annotated)
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        from kiro_crew.platform.agentcore_gateway import (
+            _write_unattended_deny_sidecar,
+            is_unattended_session,
+        )
+
+        if is_unattended_session(session_key):
+            try:
+                import asyncio
+
+                await asyncio.to_thread(
+                    _write_unattended_deny_sidecar, annotated, reason="attach_failed"
+                )
+            except Exception:
+                logger.debug(
+                    "unattended deny sidecar write failed for %s",
+                    session_key,
+                    exc_info=True,
+                )
+        logger.debug(
+            "attach_gateway_inbound failed; Gateway stays absent for %s",
+            session_key,
+            exc_info=True,
+        )
     return annotated
