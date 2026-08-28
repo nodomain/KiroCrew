@@ -80,7 +80,10 @@ export function ShellAside({ copy }: { copy: ShellAsideCopy }) {
             {copy.panelBody}
           </p>
         </div>
-        <p className="mt-8 text-[12px] font-medium text-accent-fg/75">{copy.panelFootnote}</p>
+        {/* Width-capped like the body: the footnote paints above the ghosts
+            (z-10) but both are near-white, so a line running under the
+            bottom-right mascot becomes white-on-white and unreadable. */}
+        <p className="mt-8 max-w-[270px] text-[12px] font-medium text-accent-fg/75">{copy.panelFootnote}</p>
       </div>
     </aside>
   )
