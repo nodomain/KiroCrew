@@ -230,6 +230,7 @@ class TestTemplate:
             "KirocrewRef",
             "AllowSshCidr",
             "AgentCoreWorkloadName",
+            "AgentCoreGatewayUrl",
         ):
             block = _re.search(rf"  {param}:\n(?:    .+\n)+", text)
             assert block, f"parameter {param} missing"

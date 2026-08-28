@@ -140,6 +140,10 @@ Parameters:
     Type: String
     Default: ""
     MaxLength: 512
+    # Unquoted user-data heredoc interpolates this into Environment=. Reject
+    # `$`, backticks, parentheses, whitespace, and quotes so a direct
+    # `aws cloudformation deploy` cannot land `$(command)` in the unit file.
+    AllowedPattern: "^$|^https://[A-Za-z0-9._~:/?@%!=+&,-]{1,504}$"
     Description: >-
       MCP URL of an existing Amazon Bedrock AgentCore Gateway this crew
       should call. Empty means identity is created but no Gateway spec is
@@ -252,7 +256,6 @@ Resources:
             Effect: Allow
             Action:
               - bedrock-agentcore:GetWorkloadAccessToken
-              - bedrock-agentcore:GetWorkloadAccessTokenForUserId
             Resource:
               - !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default"
               - !GetAtt CrewWorkloadIdentity.WorkloadIdentityArn
@@ -266,7 +269,6 @@ Resources:
               - bedrock-agentcore:GetGateway
               - bedrock-agentcore:ListGatewayTargets
               - bedrock-agentcore:GetGatewayTarget
-              - bedrock-agentcore:SynchronizeGatewayTargets
             Resource: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*"
           - Sid: DenyJwtPathOnWorkloadPosture
             Effect: Deny
@@ -294,7 +296,6 @@ Resources:
               - bedrock-agentcore:GetGateway
               - bedrock-agentcore:ListGatewayTargets
               - bedrock-agentcore:GetGatewayTarget
-              - bedrock-agentcore:SynchronizeGatewayTargets
             Resource: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*"
           - Sid: DenyUserIdAndIamGateway
             Effect: Deny

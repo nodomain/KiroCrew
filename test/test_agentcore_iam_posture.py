@@ -92,7 +92,6 @@ def test_workload_instance_document_denies_for_jwt() -> None:
     assert identity["Effect"] == "Allow"
     assert _actions(identity) == {
         "bedrock-agentcore:GetWorkloadAccessToken",
-        "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
     }
     assert _resources(identity) == _WORKLOAD_RESOURCES
 
@@ -112,7 +111,6 @@ def test_workload_instance_document_denies_for_jwt() -> None:
         "bedrock-agentcore:GetGateway",
         "bedrock-agentcore:ListGatewayTargets",
         "bedrock-agentcore:GetGatewayTarget",
-        "bedrock-agentcore:SynchronizeGatewayTargets",
     }
     assert _resources(inspect) == ["arn:aws:bedrock-agentcore:*:*:gateway/*"]
 
@@ -176,14 +174,14 @@ def test_successor_boundary_is_union_ceiling() -> None:
         dumped = json.dumps(doc)
         for action in (
             "bedrock-agentcore:GetWorkloadAccessToken",
-            "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
             "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
             "bedrock-agentcore:InvokeGateway",
             "bedrock-agentcore:GetGateway",
             "bedrock-agentcore:ListGatewayTargets",
-            "bedrock-agentcore:SynchronizeGatewayTargets",
         ):
             assert action in dumped
+        assert "GetWorkloadAccessTokenForUserId" not in dumped
+        assert "SynchronizeGatewayTargets" not in dumped
         inspect = _statement_by_sid(doc, "AgentCoreInspectCeiling")
         assert _resources(inspect) == ["arn:aws:bedrock-agentcore:*:*:gateway/*"]
         s3 = _statement_by_sid(doc, "SourceBucketRead")
@@ -213,7 +211,8 @@ def test_template_instance_policies_include_inspect() -> None:
     text = ec2.load_template()
     assert text.count("AgentCoreGatewayInspect") >= 2
     assert "bedrock-agentcore:GetGateway" in text
-    assert "bedrock-agentcore:SynchronizeGatewayTargets" in text
+    assert "bedrock-agentcore:GetGatewayTarget" in text
+    assert "SynchronizeGatewayTargets" not in text
     assert "gateway/*" in text
 
 
