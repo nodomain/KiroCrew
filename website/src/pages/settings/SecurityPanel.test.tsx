@@ -2418,4 +2418,50 @@ describe('SecurityPanel — agent identity', () => {
       ),
     ).not.toHaveLength(0)
   })
+
+  it('names an empty catalog when checks passed, and stays quiet when a check failed', async () => {
+    const greenEmpty = {
+      ...CATALOG_IDLE,
+      code: 'ok' as const,
+      posture: 'workload' as const,
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      tools: { reachable: true, skip_reason: null, items: [], via: null },
+      checks: [
+        { id: 'authorizer', ok: true, detail: 'IAM' },
+        { id: 'invoke_scope', ok: true, detail: 'ok' },
+      ],
+    }
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload',
+      source: 'policy',
+      extra_installed: true,
+      extra_code: 'ok',
+      gateway_url: greenEmpty.gateway_url,
+      workload_name: 'kirocrew-e2e',
+    })
+    ;(api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue(greenEmpty)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    expect(
+      await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty_checks_ok')),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty')),
+    ).not.toBeInTheDocument()
+
+    ;(api.verifyAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...greenEmpty,
+      checks: [{ id: 'authorizer', ok: false, detail: 'mismatch' }],
+    })
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_verify') }))
+    await waitFor(() => {
+      expect(
+        screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty_checks_ok')),
+      ).not.toBeInTheDocument()
+    })
+    expect(
+      screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty')),
+    ).not.toBeInTheDocument()
+  })
 })

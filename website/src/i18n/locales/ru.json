@@ -12536,6 +12536,8 @@
         "agent_identity_consent_body": "Инструменту за шлюзом AgentCore нужен вход. Откройте разрешённую страницу в браузере.",
         "agent_identity_consent_open": "Открыть страницу входа",
         "agent_identity_consent_refused": "Адрес входа нет в списке разрешённых этой crew, поэтому он не показан.",
+        "agent_identity_consent_unavailable": "Не удалось проверить запрос входа в Gateway.",
+        "agent_identity_loading": "Загрузка удостоверения AgentCore…",
         "agent_identity_consent_title": "Вход в шлюз",
         "agent_identity_hint": "Идентичность AgentCore этой crew. Workload даёт доступ к шлюзу без входа. Login выдаёт только одобренный шлюзом MCP и требует входа человека. Off оставляет эту crew без изменений.",
         "agent_identity_name": "Имя рабочей нагрузки",
@@ -12580,8 +12582,10 @@
         "agent_identity_target_status": "Состояние",
         "agent_identity_target_mode": "Список",
         "agent_identity_target_synced": "Последняя синхронизация",
+        "agent_identity_target_actions": "Действия",
         "agent_identity_tools": "Инструменты, которые агент может вызывать",
         "agent_identity_tools_empty": "Инструменты ещё не перечислены. Каталог может быть устаревшим, аутентификация может не совпадать, или эта идентификация не может вызвать шлюз.",
+        "agent_identity_tools_empty_checks_ok": "Проверки прошли, но у этого шлюза нет инструментов. Добавьте или синхронизируйте цель и проверьте снова.",
         "agent_identity_tools_skipped_login": "Идентификация входа показывает инструменты после входа из чата. Эта страница не может взять ту сессию.",
         "agent_identity_pending_auth": "Эта цель ждёт вашего входа.",
         "agent_identity_mismatch_authorizer": "Входящая аутентификация этого шлюза не совпадает с идентификацией этой crew. Workload нужен IAM; входу нужен JWT-авторизатор шлюза.",
@@ -12613,7 +12617,6 @@
         "agent_identity_type_provider": "Поставщик",
         "agent_identity_type_runtime": "AgentCore Runtime",
         "agent_identity_type_passthrough": "Проксирование",
-        
         "gov_scope_channels": "Каналы",
         "gov_scope_commands": "Команды",
         "gov_scope_cron": "Cron",
@@ -12749,7 +12752,11 @@
           "allow_all_confirm_ack": "Я понимаю, что каждое стороннее приложение, которое я установлю, сможет запускать свой код с правами доступа Kiro Crew.",
           "ineffective_label": "Сохранено, но не работает",
           "ineffective_description": "Эти имена сохранены как доверенные, но Kiro Crew их не принимает, поэтому приложения остаются заблокированными. Удали их, чтобы навести порядок в списке."
-        }
+        },
+        "agent_identity_name_required": "Set a workload name before turning identity on.",
+        "agent_identity_code_not_kirocrew": "Could not invoke this Gateway. Attach bedrock-agentcore:InvokeGateway on this Gateway to the role this crew uses. A kirocrew cloud launch role only grants kirocrew-* Gateways.",
+        "agent_identity_code_invoke_denied": "This crew's AWS credentials were refused when calling the Gateway. Attach bedrock-agentcore:InvokeGateway on this Gateway to the role this crew uses.",
+        "agent_identity_code_proxy_unavailable": "The local Gateway proxy could not start. Install AgentCore support on this gateway, then verify again."
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Назначить переключение вкладок чата на Ctrl+цифра вместо Option+цифра",

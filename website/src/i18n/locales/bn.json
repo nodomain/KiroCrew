@@ -12200,6 +12200,8 @@
         "agent_identity_consent_body": "AgentCore গেটওয়ের পেছনের একটি টুলের জন্য সাইন-ইন প্রয়োজন। ব্রাউজারে অনুমোদিত পৃষ্ঠাটি খুলুন।",
         "agent_identity_consent_open": "সাইন-ইন পৃষ্ঠা খুলুন",
         "agent_identity_consent_refused": "সাইন-ইন ঠিকানা এই crew-এর অনুমোদিত তালিকায় নেই, তাই দেখানো হয়নি।",
+        "agent_identity_consent_unavailable": "গেটওয়ে সাইন-ইন অনুরোধ যাচাই করা যায়নি।",
+        "agent_identity_loading": "AgentCore পরিচয় লোড হচ্ছে…",
         "agent_identity_consent_title": "গেটওয়ে সাইন-ইন",
         "agent_identity_hint": "এই crew-এর AgentCore পরিচয়। Workload লগইন ছাড়াই গেটওয়েতে পৌঁছায়। Login শুধু গেটওয়ে-অনুমোদিত MCP দেয় এবং সাইন-ইন লাগে। Off এই crew অপরিবর্তিত রাখে।",
         "agent_identity_name": "ওয়ার্কলোডের নাম",
@@ -12244,8 +12246,10 @@
         "agent_identity_target_status": "Status",
         "agent_identity_target_mode": "Listing",
         "agent_identity_target_synced": "Last sync",
+        "agent_identity_target_actions": "অ্যাকশন",
         "agent_identity_tools": "Tools the agent can call",
         "agent_identity_tools_empty": "No tools listed yet. The catalog may be stale, inbound auth may not match, or this identity cannot call the Gateway.",
+        "agent_identity_tools_empty_checks_ok": "Checks passed, but this Gateway lists no tools. Add or sync a target, then verify again.",
         "agent_identity_tools_skipped_login": "Login identity lists tools after someone signs in from a chat. This page cannot borrow that session.",
         "agent_identity_pending_auth": "This target is waiting for you to sign in.",
         "agent_identity_mismatch_authorizer": "This Gateway's inbound auth does not match this crew's identity. Workload needs IAM; login needs the Gateway JWT authorizer.",
@@ -12277,7 +12281,6 @@
         "agent_identity_type_provider": "Provider",
         "agent_identity_type_runtime": "AgentCore Runtime",
         "agent_identity_type_passthrough": "Passthrough",
-        
         "gov_scope_channels": "চ্যানেল",
         "gov_scope_commands": "কমান্ড",
         "gov_scope_cron": "Cron",
@@ -12413,7 +12416,11 @@
           "allow_all_confirm_ack": "আমি বুঝেছি, আমি যে তৃতীয় পক্ষের অ্যাপই ইনস্টল করি সেটি Kiro Crew-এর অ্যাক্সেস নিয়ে নিজের কোড চালাতে পারবে।",
           "ineffective_label": "সংরক্ষিত, কিন্তু কাজ করছে না",
           "ineffective_description": "এই নামগুলো বিশ্বাসযোগ্য হিসেবে সংরক্ষিত হয়েছিল, কিন্তু Kiro Crew এগুলো গ্রহণ করে না, তাই অ্যাপগুলো এখনও ব্লক আছে। তালিকা পরিষ্কার করতে এগুলো সরিয়ে দিন।"
-        }
+        },
+        "agent_identity_name_required": "Set a workload name before turning identity on.",
+        "agent_identity_code_not_kirocrew": "Could not invoke this Gateway. Attach bedrock-agentcore:InvokeGateway on this Gateway to the role this crew uses. A kirocrew cloud launch role only grants kirocrew-* Gateways.",
+        "agent_identity_code_invoke_denied": "This crew's AWS credentials were refused when calling the Gateway. Attach bedrock-agentcore:InvokeGateway on this Gateway to the role this crew uses.",
+        "agent_identity_code_proxy_unavailable": "The local Gateway proxy could not start. Install AgentCore support on this gateway, then verify again."
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "চ্যাট-ট্যাব পরিবর্তনকে Option+সংখ্যার বদলে Ctrl+সংখ্যার সঙ্গে বাঁধুন",

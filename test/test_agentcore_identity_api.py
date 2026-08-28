@@ -10,6 +10,7 @@ import asyncio
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 from kiro_crew.dashboard.handlers import agentcore_identity as mod
 
@@ -50,15 +51,21 @@ def _isolate(monkeypatch, tmp_path: Path, *, env: dict[str, str] | None = None) 
     home = tmp_path / "security_policy.json"
     monkeypatch.setattr(mod, "_policy_home_path", lambda: home)
     monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
+    monkeypatch.delenv("KIROCREW_POLICY_URL", raising=False)
     monkeypatch.delenv("KIROCREW_AGENTCORE_WORKLOAD_NAME", raising=False)
     for key, value in (env or {}).items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(mod, "current_context", lambda: type("C", (), {"governance": None})())
+    monkeypatch.setattr(
+        mod,
+        "current_context",
+        lambda: type("C", (), {"governance": None, "profile": "standalone"})(),
+    )
     monkeypatch.setattr(mod, "agentcore_posture", lambda _ceiling: None)
     monkeypatch.setattr(mod, "_audit", lambda *a, **k: None)
     monkeypatch.setattr(mod, "ensure_extra", lambda: "ok")
     monkeypatch.setattr(mod, "apply_agentcore_runtime", lambda: True)
     monkeypatch.setattr(mod, "_rebuild_agent_after_apply", lambda: None)
+    monkeypatch.setattr(mod, "_drop_live_identity", AsyncMock())
     monkeypatch.setattr(
         mod,
         "extra_snapshot",
@@ -119,12 +126,37 @@ def test_put_hot_applies_so_restart_is_not_required(tmp_path: Path, monkeypatch)
     )
 
 
+def test_get_refuses_app_token(tmp_path: Path, monkeypatch) -> None:
+    _isolate(monkeypatch, tmp_path)
+    resp = asyncio.run(mod.api_agentcore_identity_get(_Req(app="board")))
+    assert resp.status == 403
+    assert json.loads(resp.text)["code"] == "dashboard_user_required"
+
+
 def test_put_refuses_app_token(tmp_path: Path, monkeypatch) -> None:
     _isolate(monkeypatch, tmp_path)
     resp = asyncio.run(mod.api_agentcore_identity_save(_Req({"posture": "workload"}, app="board")))
     assert resp.status == 403
     body = json.loads(resp.text)
-    assert body["code"] == "dashboard_owner_required"
+    assert body["code"] == "dashboard_user_required"
+    assert not (tmp_path / "security_policy.json").exists()
+
+
+def test_put_refuses_companion_ceiling(tmp_path: Path, monkeypatch) -> None:
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        mod,
+        "current_context",
+        lambda: type("C", (), {"governance": None, "profile": "enterprise"})(),
+    )
+    resp = asyncio.run(
+        mod.api_agentcore_identity_save(
+            _Req({"posture": "workload", "workload_name": "kirocrew-e2e"})
+        )
+    )
+    assert resp.status == 409
+    body = json.loads(resp.text)
+    assert body["write_blocked"] == "companion"
     assert not (tmp_path / "security_policy.json").exists()
 
 
@@ -348,3 +380,110 @@ def test_get_does_not_install_extra(tmp_path: Path, monkeypatch) -> None:
     resp = asyncio.run(mod.api_agentcore_identity_get(_Req()))
     assert resp.status == 200
     assert calls == []
+
+
+def test_put_preserves_existing_agentcore_scopes(tmp_path: Path, monkeypatch) -> None:
+    home = _isolate(monkeypatch, tmp_path)
+    scopes = {"mcp": {"mode": "allow", "allow": ["@gw"]}}
+    home.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "boot": {"require_sandbox": True, "allow_terminal": False, "fail_closed": True},
+                "capabilities": {
+                    "agentcore": {
+                        "enabled": True,
+                        "posture": "workload",
+                        "workload_name": "kirocrew-e2e",
+                        "scopes": scopes,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    resp = asyncio.run(mod.api_agentcore_identity_save(_Req({"posture": "login"})))
+    assert resp.status == 200
+    data = json.loads(home.read_text(encoding="utf-8"))
+    assert data["capabilities"]["agentcore"]["posture"] == "login"
+    assert data["capabilities"]["agentcore"]["scopes"] == scopes
+    assert data["capabilities"]["agentcore"]["workload_name"] == "kirocrew-e2e"
+
+
+def test_put_resets_live_sessions_after_successful_apply(tmp_path: Path, monkeypatch) -> None:
+    dropped: list[object] = []
+
+    async def _record(request: object) -> None:
+        dropped.append(request)
+
+    home = _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(mod, "_drop_live_identity", _record)
+    req = _Req({"posture": "workload", "workload_name": "kirocrew-e2e"})
+    resp = asyncio.run(mod.api_agentcore_identity_save(req))
+    assert resp.status == 200
+    assert dropped == [req]
+    assert json.loads(home.read_text(encoding="utf-8"))["version"] == 1
+
+
+def test_put_does_not_reset_sessions_when_apply_fails(tmp_path: Path, monkeypatch) -> None:
+    dropped: list[object] = []
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(mod, "apply_agentcore_runtime", lambda: False)
+    monkeypatch.setattr(mod, "_drop_live_identity", lambda request: dropped.append(request))
+    resp = asyncio.run(
+        mod.api_agentcore_identity_save(
+            _Req({"posture": "workload", "workload_name": "kirocrew-e2e"})
+        )
+    )
+    assert resp.status == 200
+    assert dropped == []
+
+
+def test_put_rejects_unsupported_policy_version(tmp_path: Path, monkeypatch) -> None:
+    home = _isolate(monkeypatch, tmp_path)
+    original = {
+        "version": 2,
+        "boot": {"require_sandbox": True, "allow_terminal": False, "fail_closed": True},
+        "capabilities": {},
+    }
+    home.write_text(json.dumps(original), encoding="utf-8")
+    resp = asyncio.run(
+        mod.api_agentcore_identity_save(
+            _Req({"posture": "workload", "workload_name": "kirocrew-e2e"})
+        )
+    )
+    assert resp.status == 400
+    assert json.loads(resp.text)["code"] == "invalid_policy"
+    assert json.loads(home.read_text(encoding="utf-8")) == original
+
+
+def test_drop_live_identity_resets_sessions_and_proxy(monkeypatch) -> None:
+    reset: list[str] = []
+
+    async def _reset(request: object) -> int:
+        reset.append("sessions")
+        return 0
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.sessions._reset_all_sessions",
+        _reset,
+    )
+    monkeypatch.setattr(
+        "kiro_crew.platform.agentcore_sigv4.reset_workload_proxy",
+        lambda: reset.append("proxy"),
+    )
+    asyncio.run(mod._drop_live_identity(_Req()))
+    assert reset == ["sessions", "proxy"]
+
+
+def test_put_refuses_distribution_url(tmp_path: Path, monkeypatch) -> None:
+    _isolate(
+        monkeypatch,
+        tmp_path,
+        env={"KIROCREW_POLICY_URL": "https://policy.example.test/p.json"},
+    )
+    resp = asyncio.run(mod.api_agentcore_identity_save(_Req({"posture": "workload"})))
+    assert resp.status == 409
+    body = json.loads(resp.text)
+    assert body["code"] == "policy_not_writable"
+    assert body["write_blocked"] == "distribution"

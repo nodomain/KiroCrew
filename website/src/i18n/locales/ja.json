@@ -12031,6 +12031,8 @@
         "agent_identity_consent_body": "AgentCore ゲートウェイ配下のツールを使うにはサインインが必要です。許可リストのページをブラウザーで開いてください。",
         "agent_identity_consent_open": "サインインページを開く",
         "agent_identity_consent_refused": "サインイン先はこの crew の許可リストにないため表示しません。",
+        "agent_identity_consent_unavailable": "Gateway のサインイン要求を確認できませんでした。",
+        "agent_identity_loading": "AgentCore の ID を読み込み中…",
         "agent_identity_consent_title": "ゲートウェイのサインイン",
         "agent_identity_hint": "この crew の AgentCore 識別です。Workload はログインなしでゲートウェイに到達できます。Login はゲートウェイ承認済みの MCP のみを提供し、人のサインインが必要です。オフにするとこの crew は変わりません。",
         "agent_identity_name": "ワークロード名",
@@ -12075,8 +12077,10 @@
         "agent_identity_target_status": "状態",
         "agent_identity_target_mode": "一覧方式",
         "agent_identity_target_synced": "最終同期",
+        "agent_identity_target_actions": "操作",
         "agent_identity_tools": "エージェントが呼び出せるツール",
         "agent_identity_tools_empty": "ツールはまだありません。カタログが古い、受信認証が一致しない、またはこの ID がゲートウェイを呼び出せない可能性があります。",
+        "agent_identity_tools_empty_checks_ok": "チェックは成功しましたが、このゲートウェイにはツールがありません。ターゲットを追加または同期して、もう一度確認してください。",
         "agent_identity_tools_skipped_login": "ログイン ID は、チャットからサインインした後にツールを一覧表示します。このページはそのセッションを借りられません。",
         "agent_identity_pending_auth": "このターゲットはサインイン待ちです。",
         "agent_identity_mismatch_authorizer": "このゲートウェイの受信認証は、この crew の ID と一致しません。ワークロードには IAM、ログインにはゲートウェイ JWT オーソライザーが必要です。",
@@ -12108,7 +12112,6 @@
         "agent_identity_type_provider": "プロバイダー",
         "agent_identity_type_runtime": "AgentCore Runtime",
         "agent_identity_type_passthrough": "パススルー",
-        
         "gov_scope_channels": "チャネル",
         "gov_scope_commands": "コマンド",
         "gov_scope_cron": "cron",
@@ -12244,7 +12247,11 @@
           "allow_all_confirm_ack": "インストールする各サードパーティアプリが、Kiro Crew のアクセス権で独自のコードを実行できるようになることを理解しました。",
           "ineffective_label": "保存済みだが機能していません",
           "ineffective_description": "これらの名前は信頼済みとして保存されましたが、Kiro Crew はそれらを受け付けないため、アプリは依然としてブロックされています。リストを整理するには削除してください。"
-        }
+        },
+        "agent_identity_name_required": "Set a workload name before turning identity on.",
+        "agent_identity_code_not_kirocrew": "Could not invoke this Gateway. Attach bedrock-agentcore:InvokeGateway on this Gateway to the role this crew uses. A kirocrew cloud launch role only grants kirocrew-* Gateways.",
+        "agent_identity_code_invoke_denied": "This crew's AWS credentials were refused when calling the Gateway. Attach bedrock-agentcore:InvokeGateway on this Gateway to the role this crew uses.",
+        "agent_identity_code_proxy_unavailable": "The local Gateway proxy could not start. Install AgentCore support on this gateway, then verify again."
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "チャットタブの切り替えを Option+digit ではなく Ctrl+digit にバインドします",

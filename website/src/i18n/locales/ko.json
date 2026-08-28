@@ -12031,6 +12031,8 @@
         "agent_identity_consent_body": "AgentCore 게이트웨이 뒤의 도구를 쓰려면 로그인해야 합니다. 브라우저에서 허용 목록에 있는 페이지를 여세요.",
         "agent_identity_consent_open": "로그인 페이지 열기",
         "agent_identity_consent_refused": "로그인 주소가 이 crew의 허용 목록에 없어 표시하지 않습니다.",
+        "agent_identity_consent_unavailable": "Gateway 로그인 요청을 확인할 수 없습니다.",
+        "agent_identity_loading": "AgentCore ID를 불러오는 중…",
         "agent_identity_consent_title": "게이트웨이 로그인",
         "agent_identity_hint": "이 crew의 AgentCore 신원입니다. Workload는 로그인 없이 게이트웨이에 도달합니다. Login은 게이트웨이가 승인한 MCP만 제공하며 사람이 로그인해야 합니다. 끄면 이 crew는 그대로입니다.",
         "agent_identity_name": "워크로드 이름",
@@ -12075,8 +12077,10 @@
         "agent_identity_target_status": "상태",
         "agent_identity_target_mode": "나열 방식",
         "agent_identity_target_synced": "마지막 동기화",
+        "agent_identity_target_actions": "작업",
         "agent_identity_tools": "에이전트가 호출할 수 있는 도구",
         "agent_identity_tools_empty": "아직 도구가 없습니다. 카탈로그가 오래되었거나, 인바운드 인증이 맞지 않거나, 이 자격 증명이 게이트웨이를 호출할 수 없습니다.",
+        "agent_identity_tools_empty_checks_ok": "검사는 통과했지만 이 게이트웨이에 도구가 없습니다. 대상을 추가하거나 동기화한 다음 다시 확인하세요.",
         "agent_identity_tools_skipped_login": "로그인 자격 증명은 채팅에서 로그인한 뒤에 도구를 나열합니다. 이 페이지는 해당 세션을 빌릴 수 없습니다.",
         "agent_identity_pending_auth": "이 대상은 로그인을 기다리고 있습니다.",
         "agent_identity_mismatch_authorizer": "이 게이트웨이의 인바운드 인증이 이 crew 자격 증명과 맞지 않습니다. 워크로드는 IAM이, 로그인은 게이트웨이 JWT 권한 부여자가 필요합니다.",
@@ -12108,7 +12112,6 @@
         "agent_identity_type_provider": "제공자",
         "agent_identity_type_runtime": "AgentCore Runtime",
         "agent_identity_type_passthrough": "패스스루",
-        
         "gov_scope_channels": "채널",
         "gov_scope_commands": "명령",
         "gov_scope_cron": "Cron",
@@ -12244,7 +12247,11 @@
         "yolo_duration_next_activation_note": "다음에 자동 승인을 켤 때 적용됩니다.",
         "yolo_duration_title": "자동 승인 유지 시간",
         "yolo_duration_until_shutdown": "Kiro Crew가 재시작될 때까지",
-        "your_custom_denies": "사용자 지정 차단"
+        "your_custom_denies": "사용자 지정 차단",
+        "agent_identity_name_required": "Set a workload name before turning identity on.",
+        "agent_identity_code_not_kirocrew": "Could not invoke this Gateway. Attach bedrock-agentcore:InvokeGateway on this Gateway to the role this crew uses. A kirocrew cloud launch role only grants kirocrew-* Gateways.",
+        "agent_identity_code_invoke_denied": "This crew's AWS credentials were refused when calling the Gateway. Attach bedrock-agentcore:InvokeGateway on this Gateway to the role this crew uses.",
+        "agent_identity_code_proxy_unavailable": "The local Gateway proxy could not start. Install AgentCore support on this gateway, then verify again."
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "채팅 탭 전환을 Option+숫자 대신 Ctrl+숫자에 할당합니다",

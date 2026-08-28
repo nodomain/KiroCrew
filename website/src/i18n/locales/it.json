@@ -12367,6 +12367,8 @@
         "agent_identity_consent_body": "Uno strumento dietro il gateway AgentCore richiede l’accesso. Apri la pagina consentita nel browser.",
         "agent_identity_consent_open": "Apri pagina di accesso",
         "agent_identity_consent_refused": "L’indirizzo di accesso non è nell’elenco consentiti di questa crew, quindi non viene mostrato.",
+        "agent_identity_consent_unavailable": "Impossibile verificare una richiesta di accesso Gateway.",
+        "agent_identity_loading": "Caricamento identità AgentCore…",
         "agent_identity_consent_title": "Accesso al gateway",
         "agent_identity_hint": "Identità AgentCore di questa crew. Workload raggiunge il gateway senza accesso. Login offre solo l’MCP approvato dal gateway e richiede l’accesso di una persona. Off lascia questa crew invariata.",
         "agent_identity_name": "Nome del carico di lavoro",
@@ -12411,8 +12413,10 @@
         "agent_identity_target_status": "Stato",
         "agent_identity_target_mode": "Elenco",
         "agent_identity_target_synced": "Ultima sync",
+        "agent_identity_target_actions": "Azioni",
         "agent_identity_tools": "Strumenti che l’agente può chiamare",
         "agent_identity_tools_empty": "Nessuno strumento elencato. Il catalogo può essere obsoleto, l’autenticazione può non corrispondere oppure questa identità non può chiamare il gateway.",
+        "agent_identity_tools_empty_checks_ok": "I controlli sono riusciti, ma questo gateway non elenca strumenti. Aggiungi o sincronizza una destinazione e verifica di nuovo.",
         "agent_identity_tools_skipped_login": "L’identità di accesso elenca gli strumenti dopo l’accesso dalla chat. Questa pagina non può usare quella sessione.",
         "agent_identity_pending_auth": "Questa destinazione è in attesa del tuo accesso.",
         "agent_identity_mismatch_authorizer": "L’autenticazione in ingresso di questo gateway non corrisponde all’identità di questa crew. Workload richiede IAM; l’accesso richiede l’authorizer JWT.",
@@ -12444,7 +12448,6 @@
         "agent_identity_type_provider": "Provider",
         "agent_identity_type_runtime": "AgentCore Runtime",
         "agent_identity_type_passthrough": "Passthrough",
-        
         "gov_scope_channels": "Canali",
         "gov_scope_commands": "Comandi",
         "gov_scope_cron": "Cron",
@@ -12580,7 +12583,11 @@
           "allow_all_confirm_ack": "Ho capito che ogni app di terze parti che installo potrà eseguire codice proprio con gli accessi di Kiro Crew.",
           "ineffective_label": "Salvato ma senza effetto",
           "ineffective_description": "Questi nomi sono stati salvati come attendibili, ma Kiro Crew non li accetta, quindi le app restano bloccate. Rimuovili per pulire l'elenco."
-        }
+        },
+        "agent_identity_name_required": "Set a workload name before turning identity on.",
+        "agent_identity_code_not_kirocrew": "Could not invoke this Gateway. Attach bedrock-agentcore:InvokeGateway on this Gateway to the role this crew uses. A kirocrew cloud launch role only grants kirocrew-* Gateways.",
+        "agent_identity_code_invoke_denied": "This crew's AWS credentials were refused when calling the Gateway. Attach bedrock-agentcore:InvokeGateway on this Gateway to the role this crew uses.",
+        "agent_identity_code_proxy_unavailable": "The local Gateway proxy could not start. Install AgentCore support on this gateway, then verify again."
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Associa il cambio di scheda chat a Ctrl+cifra invece di Option+cifra",

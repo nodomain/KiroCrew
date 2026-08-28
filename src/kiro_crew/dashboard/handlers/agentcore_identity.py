@@ -21,7 +21,6 @@ import asyncio
 import json
 import logging
 import os
-from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -34,14 +33,14 @@ from kiro_crew.platform.agentcore_aws import (
     normalize_agentcore_gateway_url,
     normalize_agentcore_workload_name,
 )
-from kiro_crew.platform.context import current_context
+from kiro_crew.platform.context import PROFILE_STANDALONE, current_context
 from kiro_crew.platform.governance import (
     PlatformCompositionError,
     _policy_home_path,
     agentcore_posture,
     parse_policy,
 )
-from kiro_crew.platform_compat import restrict_to_owner
+from kiro_crew.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -156,9 +155,44 @@ def _env_gateway_url() -> str:
         return ""
 
 
+def _refuse_non_owner(request: web.Request, operation: str) -> web.Response | None:
+    """Refuse app tokens and non-owner dashboard sessions."""
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_owner_dashboard_request,
+        stale_owner_session_response,
+    )
+
+    if request.get("app"):
+        _audit(
+            request,
+            operation=operation,
+            outcome="denied",
+            error="app tokens may not read or write AgentCore identity",
+        )
+        return web.json_response(
+            {"error": "dashboard user required", "code": "dashboard_user_required"},
+            status=403,
+        )
+    if not is_owner_dashboard_request(request):
+        _audit(request, operation=operation, outcome="denied", error="non_owner")
+        stale = stale_owner_session_response(request)
+        if stale is not None:
+            return stale
+        return web.json_response(
+            {"error": "dashboard owner required", "code": "dashboard_owner_required"},
+            status=403,
+        )
+    return None
+
+
 def _write_reason() -> str:
+    profile = getattr(current_context(), "profile", PROFILE_STANDALONE)
+    if profile != PROFILE_STANDALONE:
+        return "companion"
     if os.environ.get("KIROCREW_SECURITY_POLICY", "").strip():
         return "fleet_override"
+    if os.environ.get("KIROCREW_POLICY_URL", "").strip():
+        return "distribution"
     path = _policy_home_path()
     if not path.is_file():
         return ""
@@ -171,6 +205,9 @@ def _write_reason() -> str:
     identity = data.get("identity")
     if isinstance(identity, dict) and str(identity.get("signature") or "").strip():
         return "signed"
+    distribution = data.get("distribution")
+    if isinstance(distribution, dict) and str(distribution.get("source") or "").strip():
+        return "distribution"
     return ""
 
 
@@ -182,6 +219,24 @@ def _rebuild_agent_after_apply() -> None:
         rebuild_agent_config()
     except Exception:
         logger.warning("AgentCore apply: agent config rebuild failed", exc_info=True)
+
+
+async def _drop_live_identity(request: web.Request) -> None:
+    """Drop live ACP sessions and the process-wide SigV4 proxy after apply.
+
+    Rebuild only affects the next ``session/new``. Existing sessions keep the
+    previously injected Gateway URL and proxy/bearer headers, so Save → Off
+    would otherwise leave access in place until those sessions die.
+    """
+    from kiro_crew.dashboard.handlers.sessions import _reset_all_sessions
+
+    await _reset_all_sessions(request)
+    try:
+        from kiro_crew.platform.agentcore_sigv4 import reset_workload_proxy
+
+        await asyncio.to_thread(reset_workload_proxy)
+    except Exception:
+        logger.warning("AgentCore apply: workload proxy reset failed", exc_info=True)
 
 
 def _snapshot(
@@ -248,12 +303,9 @@ def _read_home_document() -> dict[str, Any]:
 def _write_home_document(data: dict[str, Any]) -> None:
     parse_policy(data)
     path = _policy_home_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # atomic_write refuses a linked parent before mkdir; do not mkdir first.
     payload = json.dumps(data, indent=2, sort_keys=False) + "\n"
-    tmp = Path(str(path) + ".tmp")
-    tmp.write_text(payload, encoding="utf-8")
-    restrict_to_owner(tmp)
-    tmp.replace(path)
+    atomic_write(path, payload, restrict_to_owner=True)
 
 
 def _apply_posture(
@@ -267,19 +319,30 @@ def _apply_posture(
     if not isinstance(caps, dict):
         caps = {}
         data["capabilities"] = caps
+    previous = caps.get("agentcore")
     if posture == "none":
-        if "agentcore" in caps:
-            caps["agentcore"] = {"enabled": False}
+        if isinstance(previous, dict):
+            kept = {
+                key: value for key, value in previous.items() if key not in {"enabled", "posture"}
+            }
+            kept["enabled"] = False
+            caps["agentcore"] = kept
         return data
     existing_url = ""
     existing_name = ""
-    previous = caps.get("agentcore")
+    row: dict[str, Any] = {}
     if isinstance(previous, dict):
+        row = {
+            key: value
+            for key, value in previous.items()
+            if key not in {"enabled", "posture", "gateway_url", "workload_name"}
+        }
         if isinstance(previous.get("gateway_url"), str):
             existing_url = previous["gateway_url"].strip()
         if isinstance(previous.get("workload_name"), str):
             existing_name = previous["workload_name"].strip()
-    row: dict[str, Any] = {"enabled": True, "posture": posture}
+    row["enabled"] = True
+    row["posture"] = posture
     chosen_url = existing_url if gateway_url is None else gateway_url
     if chosen_url:
         row["gateway_url"] = chosen_url
@@ -289,29 +352,51 @@ def _apply_posture(
     caps["agentcore"] = row
     if "boot" not in data or not isinstance(data.get("boot"), dict):
         data["boot"] = dict(_MINIMAL_BOOT)
-    if data.get("version") != 1:
-        data["version"] = 1
     return data
+
+
+def _persist_identity_write(
+    posture: str,
+    *,
+    gateway_url: str | None,
+    workload_name: str | None,
+) -> dict[str, Any] | None:
+    """Write the home file. Return a snapshot when none-without-file is a no-op."""
+    path = _policy_home_path()
+    if posture == "none" and not path.is_file():
+        return _snapshot()
+    data = _read_home_document()
+    _apply_posture(data, posture, gateway_url=gateway_url, workload_name=workload_name)
+    _write_home_document(data)
+    return None
+
+
+def _unavailable_snapshot() -> dict[str, Any]:
+    fallback: dict[str, Any] = {
+        "configured": False,
+        "posture": None,
+        "workload_name": _workload_name(),
+        "gateway_url": "",
+        "source": "unset",
+        "writable": False,
+        "write_blocked": "unavailable",
+        "restart_required": False,
+    }
+    fallback.update(extra_snapshot())
+    return fallback
 
 
 async def api_agentcore_identity_get(request: web.Request) -> web.Response:
     """GET /api/agentcore/identity — this crew's AgentCore identity (read)."""
+    refused = _refuse_non_owner(request, OP_GET)
+    if refused is not None:
+        return refused
     try:
-        payload = _snapshot()
+        payload = await asyncio.to_thread(_snapshot)
     except Exception:
         logger.warning("agentcore identity snapshot failed", exc_info=True)
         _audit(request, operation=OP_GET, outcome="error", error="snapshot_failed")
-        fallback: dict[str, Any] = {
-            "configured": False,
-            "posture": None,
-            "workload_name": _workload_name(),
-            "gateway_url": "",
-            "source": "unset",
-            "writable": False,
-            "write_blocked": "unavailable",
-            "restart_required": False,
-        }
-        fallback.update(extra_snapshot())
+        fallback = await asyncio.to_thread(_unavailable_snapshot)
         return web.json_response(fallback)
     _audit(request, operation=OP_GET, outcome="success")
     return web.json_response(payload)
@@ -324,25 +409,9 @@ async def api_agentcore_identity_save(request: web.Request) -> web.Response:
     allow-listed messaging users are refused before the body is read: this
     writes the keystone the agent cannot touch.
     """
-    from kiro_crew.dashboard.handlers.source_providers import (
-        is_owner_dashboard_request,
-        stale_owner_session_response,
-    )
-
-    if not is_owner_dashboard_request(request):
-        _audit(
-            request,
-            operation=OP_SAVE,
-            outcome="denied",
-            error="non_owner",
-        )
-        stale = stale_owner_session_response(request)
-        if stale is not None:
-            return stale
-        return web.json_response(
-            {"error": "dashboard owner required", "code": "dashboard_owner_required"},
-            status=403,
-        )
+    refused = _refuse_non_owner(request, OP_SAVE)
+    if refused is not None:
+        return refused
     try:
         body = await request.json()
     except Exception:
@@ -450,14 +519,15 @@ async def api_agentcore_identity_save(request: web.Request) -> web.Response:
                 status=400,
             )
     try:
-        path = _policy_home_path()
-        if posture == "none" and not path.is_file():
-            payload = _snapshot()
+        noop = await asyncio.to_thread(
+            _persist_identity_write,
+            posture,
+            gateway_url=gateway_url,
+            workload_name=workload_name,
+        )
+        if noop is not None:
             _audit(request, operation=OP_SAVE, outcome="success", resources="none")
-            return web.json_response(payload)
-        data = _read_home_document()
-        _apply_posture(data, posture, gateway_url=gateway_url, workload_name=workload_name)
-        _write_home_document(data)
+            return web.json_response(noop)
     except PlatformCompositionError as exc:
         _audit(request, operation=OP_SAVE, outcome="denied", error=str(exc))
         return web.json_response({"error": str(exc), "code": "invalid_policy"}, status=400)
@@ -471,9 +541,12 @@ async def api_agentcore_identity_save(request: web.Request) -> web.Response:
     extra_code = None
     if posture in {"workload", "login"}:
         extra_code = await asyncio.to_thread(ensure_extra)
-    applied = apply_agentcore_runtime()
+    applied = await asyncio.to_thread(apply_agentcore_runtime)
     if applied:
         await asyncio.to_thread(_rebuild_agent_after_apply)
-    payload = _snapshot(last_extra_code=extra_code, runtime_applied=applied)
+        await _drop_live_identity(request)
+    payload = await asyncio.to_thread(
+        _snapshot, last_extra_code=extra_code, runtime_applied=applied
+    )
     _audit(request, operation=OP_SAVE, outcome="success", resources=posture)
     return web.json_response(payload)
