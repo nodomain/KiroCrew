@@ -935,6 +935,20 @@ def _steps_from_script(script):
     return [s["label"] for s in _json.loads(_json.loads(m.group(1)))]
 
 
+def _sync_steps_from_script(script):
+    """Same extraction as :func:`_steps_from_script`, but the whole step dicts.
+
+    The metadata the runner acts on (``stash``) lives beside the
+    label, and asserting on it through the label-only view is impossible.
+    """
+    import json as _json
+    import re
+
+    m = re.search(r"steps = json\.loads\((.*?)\)\n", script, re.S)
+    assert m, "steps assignment not found — the script shape changed"
+    return _json.loads(_json.loads(m.group(1)))
+
+
 #: The main checkout the sync tests run against. Pinned rather than ambient so the
 #: sync's refusal path (no checkout discovered) cannot decide their outcome.
 _SYNC_REPO = "/fake/main-checkout"
@@ -5408,9 +5422,14 @@ async def test_sync_build_steps_never_see_credential_helpers(monkeypatch):
         # The build+stage step is a build step too and must not be exempt from
         # the credential-absence invariant just because it runs via `python -c`.
         or any("build_and_stage" in str(x) for x in a)
+        # Neither is the preflight: it runs npm against the incoming lockfile,
+        # so it is squarely in the worktree-controlled tier. With the operator
+        # repair seam removed, NOTHING on the sync path carries credentials
+        # except the fetch step.
+        or any("npm_preflight" in str(x) for x in a)
     ]
     assert fetch_envs and all(key in e for e in fetch_envs)
-    assert len(build_envs) == 4  # merge + pip + npm ci + (npm build + stage)
+    assert len(build_envs) == 5  # merge + preflight + pip + npm ci + (build + stage)
     assert all(key not in e for e in build_envs)
 
 
@@ -9205,4 +9224,463 @@ async def test_make_live_artifact_checks_are_executor_offloaded(
         "(early probe + in-lock re-validation); "
         f"all submitted callables: {submitted_qualnames!r}.  "
         "Zero entries means the checks are still inline on the event loop."
+    )
+
+
+# --- Pull+Build: preflight, node_modules transaction, operator repair seam ---
+#
+# `npm ci` deletes node_modules before installing, so a registry that refuses one
+# package used to turn a sync into damage: the tree was emptied, the run aborted
+# mid-reify, and the checkout was left with new source, a new lockfile and no
+# frontend dependencies. These pin the three properties that make that failure a
+# no-op instead.
+
+
+@pytest.mark.asyncio
+async def test_sync_preflights_between_fetch_and_merge(monkeypatch):
+    """The probe must sit AFTER fetch and BEFORE merge.
+
+    That position is the whole mechanism, not a detail: the incoming lockfile is
+    only knowable once fetch has landed, and fetch moves nothing but remote refs
+    — so it is the one moment where a refusal costs nothing. After the merge the
+    refusal would already be too late; before the fetch there is nothing to read.
+    """
+    monkeypatch.setattr(mod.frontend, "edition_configured", lambda: False)
+    _, script = await _run_sync(mod, [])
+    labels = _steps_from_script(script)
+
+    assert "Preflight" in labels, labels
+    # Labels for fetch and merge are BOTH "Pull", so identify them positionally:
+    # fetch is the first, merge the last one before the install step.
+    assert labels[0] == "Pull", labels
+    assert labels.index("Preflight") == 1, labels
+    assert labels[2] == "Pull", labels
+    assert labels.index("pip install") > labels.index("Preflight"), labels
+
+
+@pytest.mark.asyncio
+async def test_sync_preflight_probes_the_incoming_ref_not_the_working_tree(monkeypatch):
+    """It must read the lockfile from the FETCHED ref.
+
+    Reading the working tree would answer the question about the revision we
+    already have, which is never the one that is about to be installed — and it
+    could only be done after the merge, i.e. after the point where refusing is
+    still free.
+    """
+    monkeypatch.setattr(mod.frontend, "edition_configured", lambda: False)
+    argvs = await _sync_step_argvs(monkeypatch)
+    probe = [a for a in argvs if any("npm_preflight" in str(x) for x in a)]
+    assert probe, f"no preflight step in {argvs}"
+    argv = probe[0]
+    assert argv[0] == sys.executable, argv
+    assert "--ref" in argv
+    ref = argv[argv.index("--ref") + 1]
+    # The ref the fetch step pinned, not a path and not a mutable
+    # remote-tracking name: reading the working tree would answer the question
+    # about the revision we already have, and a name the refresher can move
+    # would answer it about a revision the merge may not install.
+    assert ref == mod._SYNC_BASE_REF, ref
+    assert not ref.endswith(f"/{mod.BASE_BRANCH}"), ref
+    assert not ref.startswith("/") and not ref.startswith("."), ref
+
+
+@pytest.mark.asyncio
+async def test_sync_skips_the_preflight_on_an_edition_checkout(monkeypatch):
+    """No frontend half means nothing to preflight.
+
+    The edition path deliberately runs no npm at all, so a probe there would be
+    a network round trip that can only produce a false refusal.
+    """
+    monkeypatch.setattr(mod.frontend, "edition_configured", lambda: True)
+    _, script = await _run_sync(mod, [])
+    assert "Preflight" not in _steps_from_script(script)
+
+
+@pytest.mark.asyncio
+async def test_npm_ci_step_carries_a_node_modules_stash(monkeypatch):
+    """The transaction is attached to the npm ci step, and ONLY to it.
+
+    It cannot be a later "restore" step: the runner is fail-fast, so anything
+    after a failed step never runs — which is exactly the case that needs the
+    restore.
+    """
+    monkeypatch.setattr(mod.frontend, "edition_configured", lambda: False)
+    _, script = await _run_sync(mod, [])
+    steps = _sync_steps_from_script(script)
+    stashed = {s["label"]: s["stash"] for s in steps if s.get("stash")}
+    assert list(stashed) == ["npm ci"], stashed
+    assert stashed["npm ci"] == str(Path(_SYNC_REPO) / "website" / "node_modules")
+    # The runner must actually put it back, and only on a non-zero outcome.
+    assert "os.rename(backup, stash)" in script
+    # Deletions whose outcome decides the next rename are CONFIRMED, not
+    # fire-and-forget: a silently partial removal leaves a directory in place,
+    # makes the rename fail, and ends with a partial tree restored over a good
+    # one.
+    assert "def gone(p):" in script
+    assert "return not os.path.exists(p)" in script
+    assert "elif gone(stash):" in script
+
+
+@pytest.mark.asyncio
+async def test_sync_never_runs_an_operator_supplied_command(monkeypatch):
+    """No configurable command executes on the sync path. This is a RATCHET.
+
+    An operator-declared "repair the registry credential" hook was written, then
+    removed: its whole purpose is to run a program that touches the operator's
+    credential material, and the operator declares the command while an agent
+    can rewrite the FILE it names -- or a script among its arguments. Withholding
+    git's credential helpers did not close it either, because HOME is itself the
+    channel those credentials arrive through. No validation of argv[0] can make
+    "the operator chose this command" mean "this is the code that will run", so
+    the seam does not belong on a path that runs unattended.
+
+    Restoring it needs its own change with its own threat model, not a revert.
+    """
+    monkeypatch.setenv("KIROCREW_DEVFLEET_NPM_AUTH_REPAIR", "/bin/sh -c true")
+    monkeypatch.setattr(mod.frontend, "edition_configured", lambda: False)
+    _, script = await _run_sync(mod, [])
+
+    steps = _sync_steps_from_script(script)
+    assert not any("repair" in s for s in steps), steps
+    assert not hasattr(mod, "_npm_auth_repair_argv")
+    for token in ("KIROCREW_DEVFLEET_NPM_AUTH_REPAIR", "npm_auth_repair"):
+        assert token not in script
+    # The declared command must appear NOWHERE in the generated script. Asserted
+    # this way rather than against a list of expected argv[0]s: the toolchain
+    # binaries are resolved from the host (npm is /usr/bin/npm on one platform
+    # and /opt/homebrew/bin/npm on another), so a path allowlist tests the host
+    # rather than the property.
+    assert "/bin/sh" not in script
+    for s in steps:
+        assert "/bin/sh" not in " ".join(map(str, s["argv"])), s["argv"]
+
+
+@pytest.mark.asyncio
+async def test_a_stashed_tree_is_recovered_before_any_step_runs(monkeypatch):
+    """Recovery must not sit behind the steps that precede the transaction.
+
+    A run killed just after the move-aside leaves the tree absent and its backup
+    unclaimed. With adoption on the `npm ci` step, the next run's recovery was
+    gated on every earlier step succeeding -- so a preflight that still failed
+    left the tree missing with an intact copy sitting right beside it. Both
+    halves of leftover-state reconciliation therefore happen before the loop.
+    """
+    monkeypatch.setattr(mod.frontend, "edition_configured", lambda: False)
+    _, script = await _run_sync(mod, [])
+
+    claim = script.index("left stashed by an earlier")
+    loop_at = script.index("for i, st in enumerate(steps):")
+    assert claim < loop_at, "the stashed tree must be reclaimed before any step runs"
+    # The step's pre-run section now only moves the tree ASIDE -- no second,
+    # redundant adoption. (The `finally` block legitimately renames the backup
+    # back; that is the restore, not a reconciliation.)
+    prerun = script[loop_at:script.index("    try:", loop_at)]
+    assert "os.rename(stash, backup)" in prerun
+    assert "os.rename(backup, stash)" not in prerun
+
+
+@pytest.mark.asyncio
+async def test_the_failure_cause_is_never_taken_from_child_output(monkeypatch):
+    """A build script must not be able to forge the authoritative diagnosis.
+
+    The run's stdout carries worktree-controlled output, so any in-band marker
+    the gateway promoted could be printed by an npm lifecycle script that then
+    fails -- and the dashboard would present the forgery as the cause, remedy
+    included. Redaction does not help: it strips credentials, not instructions.
+    So the diagnosis is derived from the EXIT CODE, which a step's own child
+    cannot choose, and nothing is parsed out of the stream.
+    """
+    _, script = await _run_sync(mod, [])
+    # No promotable marker is emitted by the runner at all.
+    assert "::cause::" not in script
+    # And the worker has no branch that lifts text out of a line.
+    import inspect
+    body = inspect.getsource(mod._start_run)
+    assert "::cause::" not in body
+    assert 'npm_preflight.explain_exit(rc)' in body, \
+        "the cause must be derived from the exit code, gateway-side"
+
+
+@pytest.mark.asyncio
+async def test_runner_refuses_when_a_tree_and_a_backup_both_exist(monkeypatch):
+    """Both paths present is AMBIGUOUS, so the runner touches neither.
+
+    Killed during npm ci leaves a partial tree plus the good backup; a backup
+    outliving a successful sync leaves the good tree plus a stale one. Nothing on
+    disk distinguishes them, so either rule destroys the good copy in one case.
+    Stopping is the only branch that cannot lose data, and it exits with a code
+    the gateway maps to a sentence naming the next step.
+    """
+    monkeypatch.setattr(mod.frontend, "edition_configured", lambda: False)
+    _, script = await _run_sync(mod, [])
+
+    assert f"sys.exit({mod.npm_preflight.EXIT_TREE_AMBIGUOUS})" in script
+    assert "print('tree: %s' % stash, flush=True)" in script
+    assert "print('backup: %s' % backup, flush=True)" in script
+    # The refusal is reconciliation, so it lands before any step runs.
+    refuse = script.index(f"sys.exit({mod.npm_preflight.EXIT_TREE_AMBIGUOUS})")
+    assert refuse < script.index("for i, st in enumerate(steps):")
+    # The mapped sentence names what to do, not merely what happened.
+    text = mod.npm_preflight.explain_exit(mod.npm_preflight.EXIT_TREE_AMBIGUOUS)
+    assert "press Pull + Build again" in text
+
+
+@pytest.mark.asyncio
+async def test_only_the_preflight_step_may_assert_a_diagnosis(monkeypatch):
+    """A reserved exit code is trusted from ONE step and remapped from the rest.
+
+    Moving the diagnosis off stdout onto exit codes did not by itself make it
+    unforgeable: every step except the preflight runs worktree-controlled code
+    (an npm lifecycle script, a vite config) and can exit any number it likes.
+    A forged 41 would have the dashboard assert a registry-credential failure --
+    remedy included -- for what was actually a build error. So the runner trusts
+    a reserved code only from the step whose binary is ours, and keeps the true
+    code in the log rather than believing it.
+    """
+    monkeypatch.setattr(mod.frontend, "edition_configured", lambda: False)
+    _, script = await _run_sync(mod, [])
+
+    assert "if rc in RESERVED and st['label'] != PREFLIGHT:" in script
+    # The gate must sit on the value the STEP returned, before the finally block
+    # can set a runner-owned code of its own.
+    gate = script.index("if rc in RESERVED and st['label'] != PREFLIGHT:")
+    assert script.index("rc = run(st)") < gate < script.index("    finally:")
+    # Both literals come from the modules that own them, so they cannot drift
+    # from the step label or the explain table.
+    assert f"PREFLIGHT = {json.dumps(mod._PREFLIGHT_LABEL)}" in script
+    reserved = sorted(mod.npm_preflight.RESERVED_EXIT_CODES)
+    assert f"RESERVED = {reserved!r}" in script
+    # Every code the gateway will explain must be in the guarded set, or a code
+    # it explains could still arrive forged.
+    for code in reserved:
+        assert mod.npm_preflight.explain_exit(code), code
+
+
+def test_the_trusted_label_matches_the_step_that_carries_it():
+    """The trust check keys on a label, so the label must be the real one.
+
+    If the step were renamed without updating the constant, every reserved code
+    would be remapped -- the probe's own diagnosis would silently stop reaching
+    the dashboard, and nothing would fail.
+    """
+    import inspect
+
+    src = inspect.getsource(mod._sync_start_locked)
+    assert "_PREFLIGHT_LABEL," in src, (
+        "the preflight step must be labelled from the constant the runner's "
+        "trust check uses, not from a repeated literal"
+    )
+
+
+@pytest.mark.asyncio
+async def test_probe_and_merge_consume_one_immutable_commit(monkeypatch):
+    """Fetch, probe and merge must share a commit no background fetch can move.
+
+    ``<remote>/<base branch>`` is a mutable name and the status refresher
+    re-fetches it every _NET_REFRESH_S seconds in this same process. With a real
+    install sitting between the probe and the merge, resolving that name twice
+    lets them land on different commits -- the probe would certify a revision
+    that is not the one installed, which is worse than not probing at all,
+    because the promise is what makes the merge look safe.
+    """
+    monkeypatch.setattr(mod.frontend, "edition_configured", lambda: False)
+    _, script = await _run_sync(mod, [])
+    steps = _sync_steps_from_script(script)
+    by_label = {}
+    for st in steps:
+        by_label.setdefault(st["label"], []).append(st["argv"])
+
+    fetch = next(a for a in by_label["Pull"] if "fetch" in a)
+    merge = next(a for a in by_label["Pull"] if "merge" in a)
+    probe = by_label[mod._PREFLIGHT_LABEL][0]
+
+    # The fetch pins the tip it brought, forcing, because the ref is ours.
+    assert f"+refs/heads/{mod.BASE_BRANCH}:{mod._SYNC_BASE_REF}" in fetch
+    # Both consumers name that pinned ref...
+    assert merge[-1] == mod._SYNC_BASE_REF
+    assert probe[probe.index("--ref") + 1] == mod._SYNC_BASE_REF
+    # ...and neither still names the mutable one, which is the actual defect.
+    mutable = [a for a in merge + probe if a.endswith("/" + mod.BASE_BRANCH)]
+    assert not mutable, (
+        f"{mutable} is a mutable remote-tracking name; the refresher can move "
+        "it between the probe and the merge"
+    )
+    # The pin must be written before anything reads it, or a ref left by an
+    # earlier run could be probed and merged.
+    labels = [st["label"] for st in steps]
+    assert labels.index("Pull") < labels.index(mod._PREFLIGHT_LABEL)
+
+
+def test_the_frontend_declares_no_resolution_input_the_probe_cannot_mirror():
+    """A tripwire on the probe's three-file mirror, not on the frontend.
+
+    The preflight installs a scratch copy of ``_PROBE_FILES`` and refuses the
+    sync when that install fails. The gate is fail-closed and has no bypass, so
+    a resolution input the mirror does NOT carry makes the scratch install fail
+    while the real one would have succeeded -- which hard-blocks every
+    Pull + Build until somebody edits npm_preflight.
+
+    ``workspaces`` and ``file:``/``link:`` specifiers are that class: both make
+    npm read paths that exist in the checkout and not in the scratch directory.
+    Neither is present today, so this pins the assumption rather than reporting a
+    defect: whoever introduces one gets this failure at that moment, instead of
+    an unexplained refusal of every update afterwards. Fixing it then means
+    teaching the probe to skip (restoring today's unguarded behaviour for that
+    case) or to copy what the new input needs -- not deleting this test.
+    """
+    root = Path(__file__).resolve().parents[1]
+    pkg_path = root / "website" / "package.json"
+    if not pkg_path.is_file():  # editions ship without the frontend half
+        pytest.skip("no frontend half in this checkout")
+    pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+
+    assert "workspaces" not in pkg, (
+        "website/package.json now declares workspaces, which npm resolves from "
+        "sibling directories the preflight's scratch copy does not have. The "
+        "probe would refuse every sync. See _PROBE_FILES in npm_preflight."
+    )
+
+    local = {}
+    for field in ("dependencies", "devDependencies", "optionalDependencies"):
+        for name, spec in (pkg.get(field) or {}).items():
+            if isinstance(spec, str) and spec.startswith(("file:", "link:")):
+                local[f"{field}.{name}"] = spec
+    assert not local, (
+        f"local-path dependencies {local} resolve against the checkout, which "
+        "the preflight's scratch copy is not. The probe would refuse every "
+        "sync. See _PROBE_FILES in npm_preflight."
+    )
+
+    # The mirror must also still carry the inputs it claims to: a copy that
+    # dropped .npmrc would answer a different question than the install.
+    for name in ("package-lock.json", "package.json", ".npmrc"):
+        assert name in mod.npm_preflight._PROBE_FILES, name
+
+
+@pytest.mark.asyncio
+async def test_only_the_sync_kind_can_be_stamped_with_a_diagnosis(monkeypatch):
+    """The stamp must be gated on the kind whose script enforces the reservation.
+
+    ``_start_run`` is kind-agnostic and also serves ``provision <name>``, which
+    executes an agent-authored branch with no reserved-code remapping. Deriving
+    the cause for every kind would hand a provision run's exit 41 back as "the
+    package registry rejected our credentials" plus a remedy -- the same forged
+    authoritative diagnosis the runner-side demotion exists to refuse, arriving
+    by the other door.
+
+    Driven end to end rather than read out of the source: an earlier version of
+    this test asserted on ``inspect.getsource`` and passed while the gate was
+    comparing a variable that the ``::step::`` handler had already rebound, so
+    the sync path silently stamped nothing and the provision path raised
+    NameError. Only running it catches that.
+    """
+    seen = {}
+
+    for kind, emits_steps in (("sync", True), ("provision wt-x", False)):
+        lines = [b"::step::0::4::Pull\n"] if emits_steps else []
+        lines.append(b"npm error code E401\n")
+
+        class FakeProc:
+            pid = 4242
+            returncode = None
+
+            def __init__(self):
+                self.stdout = self
+                self._lines = list(lines)
+
+            async def readline(self):
+                return self._lines.pop(0) if self._lines else b""
+
+            async def wait(self):
+                self.returncode = mod.npm_preflight.EXIT_AUTH
+                return mod.npm_preflight.EXIT_AUTH
+
+        async def fake_exec(*a, **k):
+            return FakeProc()
+
+        monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
+        rid = await mod._start_run(kind, ["true"], env={})
+        for _ in range(80):
+            await mod.asyncio.sleep(0.05)
+            async with mod._RUNS_LOCK:
+                if mod._RUNS.get(rid, {}).get("status") not in (None, "running"):
+                    break
+        async with mod._RUNS_LOCK:
+            seen[kind] = dict(mod._RUNS[rid])
+
+    # The sync run is the one kind allowed to assert a cause -- and it must
+    # actually get one, which the shadowed comparison silently prevented.
+    assert seen["sync"].get("cause"), (
+        "the sync run was not stamped; the gate is reading something other than "
+        "the run kind"
+    )
+    assert "registry" in seen["sync"]["cause"].lower()
+    assert seen["sync"]["exit_code"] == mod.npm_preflight.EXIT_AUTH
+
+    # The provision run must be stamped with nothing AND must still complete
+    # normally: an unbound name here turned a finished run into exit -1.
+    assert not seen["provision wt-x"].get("cause"), seen["provision wt-x"]
+    assert seen["provision wt-x"]["exit_code"] == mod.npm_preflight.EXIT_AUTH, (
+        "the provision run's exit code was rewritten -- the completion path "
+        "raised before recording it"
+    )
+
+
+def test_the_stamp_gate_reads_a_name_the_step_handler_cannot_rebind():
+    """The gate must not read a variable the output loop assigns to.
+
+    This is the defect that shipped once: ``label`` is the function parameter
+    AND the ``::step::`` handler's target, so at completion it held the last
+    step's label or was unbound. Whatever the gate compares has to be assigned
+    exactly once, which is checked here on the parse tree rather than by counting
+    substrings -- the first version of this test counted ``run_kind =`` and
+    matched ``run_kind ==`` too.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(mod._start_run)))
+
+    # The name the gate actually compares against.
+    gates = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Compare)
+        and isinstance(n.left, ast.Name)
+        and any(
+            isinstance(c, ast.Name) and c.id == "_SYNC_RUN_LABEL"
+            for c in n.comparators
+        )
+    ]
+    assert len(gates) == 1, f"expected one kind gate, found {len(gates)}"
+    guarded = gates[0].left.id
+
+    targets = [
+        t.id
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.Assign, ast.AugAssign, ast.For, ast.AsyncFor))
+        for t in ast.walk(n.target if hasattr(n, "target") else n.targets[0])
+        if isinstance(t, ast.Name)
+    ]
+    assert targets.count(guarded) == 1, (
+        f"{guarded!r} is assigned {targets.count(guarded)} times in "
+        "_start_run; the gate's variable must be bound once, before any output "
+        "is read, or a later handler can rebind it out from under the gate"
+    )
+    assert guarded not in {a.arg for a in tree.body[0].args.args}, (
+        f"{guarded!r} is the parameter itself -- use a local captured at entry, "
+        "so a handler that rebinds the parameter cannot reach the gate"
+    )
+
+
+def test_the_stamp_gate_and_the_sync_label_are_one_constant():
+    """A literal in either place would let the two drift apart silently.
+
+    Drift in one direction re-opens the forgery; in the other it suppresses the
+    diagnosis this PR exists to deliver, and neither shows up as a failure.
+    """
+    assert mod._SYNC_RUN_LABEL == "sync"
+    src = Path(mod.__file__).read_text(encoding="utf-8")
+    assert '_start_run("sync"' not in src, (
+        "the sync is started with a literal label; use _SYNC_RUN_LABEL"
     )

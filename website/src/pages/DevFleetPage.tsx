@@ -59,6 +59,9 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // stalls in one band, then jumps. An indeterminate spinner plus the step name
 // and elapsed time is the honest signal.
 const STEP_MARKER_RE = /^::step::(\d+)::(.+)$/
+// The failure diagnosis arrives on the run as `cause`, derived by the gateway
+// from the exit code -- never parsed out of this stream, which also carries
+// worktree-controlled build output. So the log needs no marker handling.
 
 function filterStepMarkers(lines: string[]): string[] {
   return lines.filter((l) => !STEP_MARKER_RE.test(l))
@@ -845,12 +848,18 @@ export default function DevFleetPage() {
     if (syncRun?.rid === fleet.sync_run_id) return // already tracking this run
     syncAttachedRef.current = true
     const rid = fleet.sync_run_id
-    api.get<{ status?: string; output?: string[]; exit_code?: number; started?: number; step_label?: string }>('/run?id=' + rid)
+    api.get<{ status?: string; output?: string[]; exit_code?: number; started?: number; step_label?: string; cause?: string }>('/run?id=' + rid)
       .then((run) => {
         if (!run) return
         const t0 = run.started ? run.started * 1000 : Date.now()
         const out = run.output || []
-        const last = [...out].reverse().find((l) => l?.trim() && !STEP_MARKER_RE.test(l)) || ''
+        // Same preference as the two poll paths: a reported cause outranks the
+        // last output line, which for npm is its log-file pointer. Missing it
+        // here meant a page RELOAD after a failed build showed the uninformative
+        // line even though the diagnosis was stored on the run.
+        const last = run.cause
+          || [...out].reverse().find((l) => l?.trim() && !STEP_MARKER_RE.test(l))
+          || ''
         if (run.status === 'running') {
           setSyncRun({ rid, status: 'running', lines: out, startedAt: t0, stepLabel: run.step_label })
           pollSyncRun(rid, t0)
@@ -938,12 +947,14 @@ export default function DevFleetPage() {
       await sleep(2000)
       if (!pollAliveRef.current) return
       if (cancelledRunsRef.current.has(rid)) return
-      let run: { status?: string; output?: string[]; exit_code?: number; started?: number; step_label?: string } | null = null
+      let run: { status?: string; output?: string[]; exit_code?: number; started?: number; step_label?: string; cause?: string } | null = null
       try { run = await api.get('/run?id=' + rid) } catch { continue }
       if (!run) continue
       const t0 = run.started ? run.started * 1000 : startedAt
       const out = run.output || []
-      const last = [...out].reverse().find((l: string) => l?.trim() && !STEP_MARKER_RE.test(l)) || ''
+      const last = run.cause
+        || [...out].reverse().find((l: string) => l?.trim() && !STEP_MARKER_RE.test(l))
+        || ''
       if (run.status === 'done' || run.status === 'timeout') {
         const okRun = run.exit_code === 0
         setSyncRun({ rid, status: okRun ? 'done' : 'error', lines: out, startedAt: t0, exit: run.exit_code, last })
@@ -963,7 +974,7 @@ export default function DevFleetPage() {
       // keep polling and still issue the restart after unmount; the React state
       // setters below are safe no-ops once the component is gone.
       if (cancelledRunsRef.current.has(rid)) return
-      let run: { status?: string; output?: string[]; exit_code?: number; started?: number; step_label?: string } | null = null
+      let run: { status?: string; output?: string[]; exit_code?: number; started?: number; step_label?: string; cause?: string } | null = null
       let gone = false
       try { run = await api.get('/run?id=' + rid) } catch (e) {
         // 404 = the gateway restarted and dropped the run registry — the run
@@ -982,7 +993,13 @@ export default function DevFleetPage() {
       }
       const out = run.output || []
       const t0 = run.started ? run.started * 1000 : startedAt
-      const last = [...out].reverse().find((l) => l?.trim() && !STEP_MARKER_RE.test(l)) || ''
+      // Prefer the cause a step reported over the last output line. npm prints
+      // its diagnosis FIRST and its "a complete log of this run can be found
+      // in ..." pointer LAST, so the last line is the least informative one it
+      // produces — which is what this used to surface on every failed build.
+      const last = run.cause
+        || [...out].reverse().find((l) => l?.trim() && !STEP_MARKER_RE.test(l))
+        || ''
       if (run.status === 'done' || run.status === 'timeout') {
         const okRun = run.exit_code === 0
         setSyncRun({ rid, status: okRun ? 'done' : 'error', lines: out, startedAt: t0, exit: run.exit_code, last })
@@ -1680,9 +1697,12 @@ export default function DevFleetPage() {
     }
     // error
     return (
-      <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } as CSSProperties}>
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)' }}>{i18nT('pages.devFleetPage.pull_build_failed')}</span>
-        <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={syncRun.last}>{syncRun.last}</span>
+      <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'flex-start', gap: 8, minWidth: 0 } as CSSProperties}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)', whiteSpace: 'nowrap' }}>{i18nT('pages.devFleetPage.pull_build_failed')}</span>
+        {/* Wraps rather than ellipsizing: a cause can end with the action to
+            take, and `title`-only overflow puts that action out of reach of
+            keyboard and touch users. */}
+        <span style={{ ...mono, minWidth: 0, flex: 1, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } as CSSProperties}>{syncRun.last}</span>
         <Clickable aria-label={i18nT('pages.devFleetPage.toggle_log')} onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? i18nT('pages.devFleetPage.log') : i18nT('pages.devFleetPage.log_2')}</Clickable>
         <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_sync_status')} onClick={() => dismissSync(syncRun?.rid)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
       </div>
