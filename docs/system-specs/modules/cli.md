@@ -147,6 +147,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew gateway` | Start the Kiro Crew server (dashboard + messaging channels) |
 | `kirocrew gateway --slack-only` | Start without dashboard or SSH tunnel instructions |
 | `kirocrew gateway --no-crons` | Start without cron scheduler (use when another instance handles crons) |
+| `kirocrew gateway --no-tunnel` | Start with no published surface: refuses to start or provision a tunnel for the life of the process, whatever `tunnel.enabled` says. Reach the instance on the loopback port it binds (`ssh -L` from another host). A Dev Fleet pod boots with this unconditionally. |
 | `kirocrew setup` | Install agent config, save project dir, configure credentials |
 | `kirocrew setup --agent-only` | Only install agent config (skip credentials) |
 | `kirocrew setup --slack` | Run the guided Slack credential + slash-command setup (opt-in) |

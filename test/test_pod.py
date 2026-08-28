@@ -2862,15 +2862,35 @@ class TestBootTimeSettings:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         argv = self._booted_argv(tmp_path, monkeypatch, {"APPROVAL": "reads"})
-        assert argv == ["gateway", "--no-crons", "--approval", "reads"]
+        assert argv == ["gateway", "--no-crons", "--no-tunnel", "--approval", "reads"]
 
     def test_boot_argv_unchanged_when_unset(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The no-regression pin: a pod created before this flag existed, or
-        # created without it, must boot byte-identically to before.
+        # The no-regression pin: a pod created before the APPROVAL key existed,
+        # or created without it, boots with no --approval at all rather than
+        # picking one.
         argv = self._booted_argv(tmp_path, monkeypatch, {})
-        assert argv == ["gateway", "--no-crons"]
+        assert argv == ["gateway", "--no-crons", "--no-tunnel"]
+
+    def test_boot_always_refuses_to_publish_a_tunnel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # --no-tunnel is UNCONDITIONAL: unlike CRONS there is no env key to opt
+        # a pod back into publishing, because a throwaway instance has no
+        # business being reachable off the host. Pinned across every
+        # combination the env file can express, so an opt-in cannot be added by
+        # accident later.
+        for i, env in enumerate(
+            (
+                {},
+                {"CRONS": "1"},
+                {"APPROVAL": "yolo"},
+                {"CRONS": "1", "APPROVAL": "interactive"},
+            )
+        ):
+            argv = self._booted_argv(tmp_path / f"nt{i}", monkeypatch, env)
+            assert "--no-tunnel" in argv, env
 
     def test_boot_forces_interactive_on_an_unknown_mode(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
@@ -2882,7 +2902,7 @@ class TestBootTimeSettings:
         # Dropping would be the LEAST restrictive outcome, so boot pins
         # interactive explicitly.
         argv = self._booted_argv(tmp_path, monkeypatch, {"APPROVAL": "--not-a-mode"})
-        assert argv == ["gateway", "--no-crons", "--approval", "interactive"]
+        assert argv == ["gateway", "--no-crons", "--no-tunnel", "--approval", "interactive"]
         assert "ignoring unknown APPROVAL" in capsys.readouterr().out
 
     def test_every_declared_mode_survives_boot(
@@ -3029,7 +3049,7 @@ class TestBootTimeSettings:
     ) -> None:
         # --no-crons is dropped, which is how the gateway turns the scheduler on.
         argv = self._booted_argv(tmp_path, monkeypatch, {"CRONS": "1"})
-        assert argv == ["gateway"]
+        assert argv == ["gateway", "--no-tunnel"]
 
     def test_boot_accepts_alternative_truthy_spellings(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3037,7 +3057,7 @@ class TestBootTimeSettings:
         # The env file is hand-editable, so the obvious spellings are honoured.
         for i, raw in enumerate(("true", "YES", " on ")):
             argv = self._booted_argv(tmp_path / f"t{i}", monkeypatch, {"CRONS": raw})
-            assert argv == ["gateway"], raw
+            assert argv == ["gateway", "--no-tunnel"], raw
 
     def test_boot_ignores_an_unrecognised_crons_value(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
@@ -3045,14 +3065,14 @@ class TestBootTimeSettings:
         # Falls back to the safer setting (scheduler off, the pre-existing
         # behavior) rather than guessing, and the pod still boots.
         argv = self._booted_argv(tmp_path, monkeypatch, {"CRONS": "maybe"})
-        assert argv == ["gateway", "--no-crons"]
+        assert argv == ["gateway", "--no-crons", "--no-tunnel"]
         assert "ignoring unrecognised CRONS" in capsys.readouterr().out
 
     def test_boot_combines_crons_and_approval(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         argv = self._booted_argv(tmp_path, monkeypatch, {"CRONS": "1", "APPROVAL": "reads"})
-        assert argv == ["gateway", "--approval", "reads"]
+        assert argv == ["gateway", "--no-tunnel", "--approval", "reads"]
 
     def test_up_records_crons(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         c = self._prep_up(tmp_path, monkeypatch, active=False)

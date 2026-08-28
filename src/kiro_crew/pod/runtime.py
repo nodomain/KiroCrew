@@ -1132,6 +1132,13 @@ def write_pod_config(home_dir: Path, seed: str) -> None:
     the absence of ``SLACK_*`` in the inherited env. The HOME dir is ``0o700`` and
     ``config.json`` is ``0o600`` — the seeded config can carry provider tokens /
     API keys, which must not be world-readable on a shared host.
+
+    The seeded ``tunnel.enabled=False`` is NOT what keeps a pod from publishing.
+    This function is create-only (it returns early when ``config.json`` already
+    exists), and the value stays rewritable afterwards by anything that composes
+    config — a provider, a migration, a hand edit. The enforcement is
+    ``--no-tunnel`` on the boot argv, re-asserted at every exec; the seeded value
+    is defense in depth behind it. See ``boot``.
     """
     home_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(home_dir, stat.S_IRWXU)  # 0o700 owner-only (mkdir mode is umask-masked)
@@ -1504,6 +1511,17 @@ def boot(cfg: PodConfig, name: str) -> int:
     argv = ["gateway"]
     if not crons:
         argv.append("--no-crons")
+    # Unconditional, and deliberately not an env key like CRONS above: a pod is a
+    # throwaway instance and must have no published surface, so there is nothing
+    # for the operator to opt into. ``write_pod_config`` seeds
+    # ``tunnel.enabled=False`` too, but that is a value in a file it only writes
+    # ONCE (it returns early when config.json exists) and anything composing
+    # config later can turn it back on — after which the pod published on every
+    # boot and nothing re-asserted the guarantee. This flag is re-asserted at
+    # every exec, so the seeded value is now defense in depth rather than the
+    # enforcement. Reach a pod on the 127.0.0.1 port ``pod url`` prints, over
+    # ``ssh -L`` from another host.
+    argv.append("--no-tunnel")
     if approval:
         argv += ["--approval", approval]
     os.execve(str(bin_path), [str(bin_path), *argv], pod_env)

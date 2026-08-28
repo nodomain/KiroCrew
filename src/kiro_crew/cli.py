@@ -536,6 +536,7 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
     return {
         "no_dashboard": getattr(args, "slack_only", False),
         "no_crons": getattr(args, "no_crons", False),
+        "no_tunnel": getattr(args, "no_tunnel", False),
         "no_open": no_open,
         "port_override": port,
         "json_ready": json_ready,
@@ -1051,6 +1052,16 @@ Examples:
         "--no-crons",
         action="store_true",
         help="Skip cron scheduler — use when another instance handles cron execution",
+    )
+    gw_parser.add_argument(
+        "--no-tunnel",
+        action="store_true",
+        help=(
+            "Never publish a tunnel — the dashboard stays reachable only on the "
+            "loopback port this process binds. Use for an instance that must have "
+            "no published surface (a Dev Fleet pod passes this); reach it with "
+            "`ssh -L` instead. Overrides tunnel.enabled for this process."
+        ),
     )
     gw_parser.add_argument(
         "--seed",
