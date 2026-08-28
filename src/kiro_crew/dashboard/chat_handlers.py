@@ -59,6 +59,7 @@ from kiro_crew.dashboard.chat_runner import (
     _run_chat,
     _start_next_queued_turn,
     context_entry_expired,
+    dashboard_principal_kwargs,
     schedule_eager_spawn,
 )
 from kiro_crew.dashboard.chat_summary import generate_session_summary
@@ -810,6 +811,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 slot,
                 message,
                 _directive_user_origin=not bool(request_app),
+                **dashboard_principal_kwargs(state, user_origin=not bool(request_app)),
             ),
         ),
     )

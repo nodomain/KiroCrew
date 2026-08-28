@@ -327,8 +327,10 @@ and a core-derived `raw_id`, the same function binds the principal:
 
 1. `derive_session_principal` from those three fields.
 2. `annotate_principal` through `async_safe_context_call`, fallback =
-   the core principal unchanged. A companion may set `user_jwt`. A
-   rewrite of `subject` (or `surface` / `session_key`) is ignored.
+   the core principal unchanged. A companion may set `user_jwt` only
+   when every core-derived field is unchanged. A rewrite of `subject`
+   (or `surface` / `session_key`) discards the annotation, including
+   `user_jwt` — that credential belongs to the rejected identity.
 3. `SessionManager.set_principal` stores the result on the live
    `_Session`. The field survives `adopt_provider` (it names the
    caller, not the transcript).
@@ -336,9 +338,12 @@ and a core-derived `raw_id`, the same function binds the principal:
 Existing callers that omit `surface` / `raw_id` stay byte-identical:
 only the pid sidecar is written. Dashboard chat (`chat_runner._run_chat`)
 is the first wired caller: `surface="dashboard"`,
-`raw_id=state.owner_id` or the local OS user. When the turn text is an
-injected envelope, `principal_bind_kwargs` omits those kwargs so the
-envelope cannot bind `dashboard+{owner}`. Channel dispatchers can pass
+`raw_id=state.owner_id` or the local OS user, **and only when
+`_directive_user_origin` is true**. Injected envelopes
+(`principal_bind_kwargs` returns `{}`) and automated turns
+(app-token, cron, taskrunner) publish the pid sidecar and
+`set_principal(session_key, None)` so a leftover human principal
+cannot ride the next non-user turn. Channel dispatchers can pass
 `{channel_type, provider_user_id}` the same way without a second
 session key. `tool_input` cannot supply `subject` / `userId` —
 `reject_tool_input_identity` refuses those kwargs.

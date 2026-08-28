@@ -147,9 +147,10 @@ async def apply_principal_annotation(principal: SessionPrincipal) -> SessionPrin
     """Ask the companion to annotate; keep the core-derived ``subject``.
 
     Fallback is the core principal unchanged (Default adapter, or a
-    transient adapter error). A companion may set ``user_jwt``. A rewrite of
-    ``subject`` (or ``session_key`` / ``surface``) is ignored — those are
-    core-derived and not a companion concern.
+    transient adapter error). A companion may set ``user_jwt`` only when
+    every core-derived field is unchanged. A rewrite of ``subject``,
+    ``session_key``, or ``surface`` discards the annotation — including
+    ``user_jwt``, which belongs to the rejected identity.
     """
 
     async def _annotate() -> SessionPrincipal:
@@ -165,13 +166,8 @@ async def apply_principal_annotation(principal: SessionPrincipal) -> SessionPrin
         or annotated.session_key != principal.session_key
         or annotated.surface != principal.surface
     ):
-        logger.warning("annotate_principal rewrote a core-derived field; keeping core subject")
-        return SessionPrincipal(
-            surface=principal.surface,
-            subject=principal.subject,
-            session_key=principal.session_key,
-            user_jwt=annotated.user_jwt,
-        )
+        logger.warning("annotate_principal rewrote a core-derived field; keeping core principal")
+        return principal
     return annotated
 
 

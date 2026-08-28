@@ -169,7 +169,9 @@ def _quiet_sel():
         yield mock_sel
 
 
-async def _drive(state, slot, message: str = "hello") -> None:
+async def _drive(
+    state, slot, message: str = "hello", *, directive_user_origin: bool = True
+) -> None:
     """Run exactly one turn and leave no task behind.
 
     ``_empty_response_retries`` is pre-spent on purpose. A turn that streams no
@@ -180,8 +182,19 @@ async def _drive(state, slot, message: str = "hello") -> None:
     to its terminal notice branch instead, so one call is one turn.
     """
     slot._empty_response_retries = 2
+    principal = (
+        chat_runner.dashboard_principal_kwargs(state, user_origin=True)
+        if directive_user_origin
+        else {}
+    )
     with _quiet_sel():
-        await chat_runner._run_chat(state, slot, message)
+        await chat_runner._run_chat(
+            state,
+            slot,
+            message,
+            _directive_user_origin=directive_user_origin,
+            **principal,
+        )
     await _settle(slot)
 
 
@@ -2253,7 +2266,7 @@ class TestRunChatLocalCommands:
 
 class TestRunChatInjectedPrincipal:
     @pytest.mark.asyncio
-    async def test_cron_wrapped_message_does_not_bind_dashboard_owner(self, tmp_path):
+    async def test_user_authored_envelope_text_still_binds_dashboard_owner(self, tmp_path):
         state, client = _runner_state(tmp_path)
         state.owner_id = "alice"
         slot = _slot()
@@ -2264,8 +2277,9 @@ class TestRunChatInjectedPrincipal:
 
         pub.assert_awaited()
         kwargs = pub.await_args.kwargs
-        assert not kwargs.get("surface")
-        assert not kwargs.get("raw_id")
+        assert kwargs.get("surface") == "dashboard"
+        assert kwargs.get("raw_id") == "alice"
+        state.sessions.set_principal.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_ordinary_user_message_still_binds_dashboard_owner(self, tmp_path):
@@ -2281,6 +2295,73 @@ class TestRunChatInjectedPrincipal:
         kwargs = pub.await_args.kwargs
         assert kwargs.get("surface") == "dashboard"
         assert kwargs.get("raw_id") == "alice"
+
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_user_origin_without_surface_does_not_bind_dashboard_owner(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        state.owner_id = "alice"
+        slot = _slot()
+        _set_stream(client, [_complete()])
+        slot._empty_response_retries = 2
+
+        with _quiet_sel():
+            with patch.object(chat_runner, "publish_turn_identity", new=AsyncMock()) as pub:
+                await chat_runner._run_chat(
+                    state,
+                    slot,
+                    "hello from a linked slack thread",
+                    _directive_user_origin=True,
+                )
+        await _settle(slot)
+
+        pub.assert_awaited()
+        kwargs = pub.await_args.kwargs
+        assert not kwargs.get("surface")
+        assert not kwargs.get("raw_id")
+        state.sessions.set_principal.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_linked_slack_surface_binds_slack_user_not_dashboard_owner(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        state.owner_id = "alice"
+        slot = _slot()
+        _set_stream(client, [_complete()])
+        slot._empty_response_retries = 2
+
+        with _quiet_sel():
+            with patch.object(chat_runner, "publish_turn_identity", new=AsyncMock()) as pub:
+                await chat_runner._run_chat(
+                    state,
+                    slot,
+                    "hello from slack",
+                    _directive_user_origin=True,
+                    _principal_surface="slack",
+                    _principal_raw_id="U123",
+                )
+        await _settle(slot)
+
+        pub.assert_awaited()
+        kwargs = pub.await_args.kwargs
+        assert kwargs.get("surface") == "slack"
+        assert kwargs.get("raw_id") == "U123"
+
+    @pytest.mark.asyncio
+    async def test_automated_turn_clears_principal(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        state.owner_id = "alice"
+        slot = _slot()
+        _set_stream(client, [_complete()])
+
+        with patch.object(chat_runner, "publish_turn_identity", new=AsyncMock()) as pub:
+            await _drive(state, slot, "please fix the build", directive_user_origin=False)
+
+        pub.assert_awaited()
+        kwargs = pub.await_args.kwargs
+        assert not kwargs.get("surface")
+        assert not kwargs.get("raw_id")
+        state.sessions.set_principal.assert_called()
+        assert state.sessions.set_principal.call_args.args[1] is None
 
 
 # ── _run_chat: recovery ladders ───────────────────────────────────────────

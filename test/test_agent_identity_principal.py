@@ -191,8 +191,9 @@ async def test_annotate_principal_subject_rewrite_is_ignored() -> None:
     assert annotated.subject == "dashboard+alice"
     assert annotated.surface == "dashboard"
     assert annotated.session_key == "dashboard:1"
-    # JWT from the companion is kept; only the core-derived fields are pinned.
-    assert annotated.user_jwt == "stolen-jwt"
+    # JWT belongs to the rejected rewrite; keep the original principal intact.
+    assert annotated.user_jwt is None
+    assert annotated is core
 
 
 @pytest.mark.asyncio

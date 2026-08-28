@@ -2538,6 +2538,8 @@ async def maybe_route_linked_thread(
                 _linked_slot,
                 text,
                 _directive_user_origin=True,
+                _principal_surface="slack",
+                _principal_raw_id=user_id,
             )
         )
         _linked_slot.task = _chat_task
