@@ -10,7 +10,7 @@
  * tab strip can obtain the iframe token independently without sharing in-memory
  * state with this panel.
  */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Server,
@@ -32,12 +32,20 @@ import { removeWarm } from '../../store/instancesSlice'
 import { i18nT } from '../../i18n/t'
 import { fmtDuration, fmtUnit } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
+import AskAgentButton from '../../components/AskAgentButton'
+import {
+  clearInstanceFormDraft,
+  peekInstanceFormDraft,
+  stashInstanceFormDraft,
+} from '../../utils/instanceFormDraft'
+import { instanceFailureMessage, reportInstanceFailure } from '../../utils/instanceFailureReport'
 import { Trans } from 'react-i18next'
 
 import { SettingRef } from '../../components/settingRef/SettingRef'
 import {
   InstanceFormFields,
   useInstanceFormState,
+  instanceFormValuesFrom,
   EMPTY_INSTANCE_FORM,
 } from './InstanceFormFields'
 const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
@@ -70,11 +78,18 @@ export function StatusBadge({ status }: { status: InstanceTunnelStatus }) {
 }
 
 export function AddInstanceForm({ onAdded }: { onAdded: () => void }) {
-  const form = useInstanceFormState(EMPTY_INSTANCE_FORM)
+  // Restore what the user typed before an error hand-off navigated them away.
+  // Read once per mount: a later read would fight the live form state, and the
+  // stash is bounded by its own TTL rather than by being consumed here.
+  const [restored] = useState(() => instanceFormValuesFrom(peekInstanceFormDraft()))
+  const form = useInstanceFormState(EMPTY_INSTANCE_FORM, restored)
 
   const addMutation = useMutation({
     mutationFn: () => api.addInstance(form.body()),
     onSuccess: () => {
+      // The draft described a crew that now exists; leaving it would pre-fill the
+      // next add with the one just created.
+      clearInstanceFormDraft()
       form.reset(EMPTY_INSTANCE_FORM)
       onAdded()
     },
@@ -91,7 +106,16 @@ export function AddInstanceForm({ onAdded }: { onAdded: () => void }) {
         <Plus className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.add_instance')}
       </div>
       <InstanceFormFields idPrefix="add-instance" form={form} />
-      <ErrorNotice message={err} className="mt-3" />
+      {/* `askAgent` is safe here only BECAUSE of the stash: the hand-off navigates
+          away and unmounts this form, and a first-time user has just typed up to
+          nine fields by hand. `onHandoff` runs while the subtree is still alive,
+          so the values are persisted before the navigation can destroy them. */}
+      <ErrorNotice
+        message={err}
+        className="mt-3"
+        askAgent
+        onHandoff={() => { stashInstanceFormDraft({ ...form.values }) }}
+      />
       <div className="mt-3">
         <Btn primary onClick={() => addMutation.mutate()} disabled={addMutation.isPending || !form.valid}>
           {addMutation.isPending ? i18nT('pages.settings.instancesPanel.adding') : i18nT('pages.settings.instancesPanel.add_remote_crew')}
@@ -122,6 +146,26 @@ function InstanceRow({
   const connected = inst.status.state === 'connected'
   const ttl = inst.status.token_ttl_remaining
   const diag = inst.status.diagnosis
+  const broken = !!diag && !diag.ok
+  // The report's key, not the displayed sentence: `status.error` wins over the
+  // ladder's reason when both exist, so re-deriving a label here would ask the
+  // journal for a message it was never keyed on.
+  const failureMessage = broken ? instanceFailureMessage(inst.status, '') : ''
+  // Journal the ladder's verdict so the hand-off carries `probes` — which link in
+  // the SSH/dashboard/forward chain broke — rather than only the summary
+  // sentence. Diagnose answers 200 whether the verdict is healthy or not, so this
+  // failure never passes through the API client's own journaling.
+  useEffect(() => {
+    if (!broken) return
+    reportInstanceFailure({
+      id: inst.id,
+      name: inst.name,
+      transport: inst.connection_method === 'ssm' ? 'ssm' : 'ssh',
+      status: inst.status,
+      stage: 'connect',
+      fallbackMessage: '',
+    })
+  }, [broken, inst.id, inst.name, inst.connection_method, inst.status])
   return (
     <div className="flex items-center justify-between gap-3 py-2.5 border-b border-border last:border-b-0">
       <div className="min-w-0">
@@ -136,8 +180,15 @@ function InstanceRow({
           {typeof ttl === 'number' ? ' ' + i18nT('pages.settings.instancesPanel.token_left', { time: humanizeSecs(ttl) }) : ''}
         </div>
         <div className="mt-1"><StatusBadge status={inst.status} /></div>
-        {diag && !diag.ok ? (
-          <div className="mt-1 text-[12px] text-warn"><AlertTriangle size={12} className="lucide-inline" /> {diag.reason}</div>
+        {broken && diag ? (
+          <div className="mt-1 flex items-start gap-2 text-[12px] text-warn">
+            <span className="min-w-0" style={{ overflowWrap: 'anywhere' }}>
+              <AlertTriangle size={12} className="lucide-inline" /> {diag.reason}
+            </span>
+            {/* No draft to lose on this row, so no stash is needed: the hand-off
+                only unmounts a read-only status line. */}
+            <AskAgentButton message={failureMessage} />
+          </div>
         ) : null}
       </div>
       <div className="flex items-center gap-2 shrink-0">

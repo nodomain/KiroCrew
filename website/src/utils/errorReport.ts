@@ -38,6 +38,14 @@ export type ErrorSource =
   | 'render'
   /** An uncaught error or unhandled rejection on `window`. */
   | 'window'
+  /**
+   * A subsystem the backend reports as broken inside a SUCCESSFUL response — a
+   * remote crew whose tunnel is down, carried in a 200 status poll. Distinct
+   * from `api` because no request failed: publishing it as `api` would name a
+   * failing endpoint that in fact answered, sending a reader to audit the wrong
+   * layer.
+   */
+  | 'system'
 
 export interface ErrorReport {
   id: string

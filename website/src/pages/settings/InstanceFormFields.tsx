@@ -78,6 +78,30 @@ export const EMPTY_INSTANCE_FORM: InstanceFormValues = {
   remoteBin: '',
 }
 
+/**
+ * Validate a persisted draft back into form values.
+ *
+ * The stash (`utils/instanceFormDraft`) owns durability and stores an opaque
+ * record; this module owns the shape, so the check lives here. Every field must
+ * be present and a string — a partial or corrupted payload is rejected WHOLE
+ * rather than merged over the defaults, because a half-restored form looks
+ * complete while silently carrying a field the user never typed. `method` is
+ * additionally constrained to the two transports, since it selects which of
+ * `sshHost` / `ssmTarget` the submit gate requires.
+ */
+export function instanceFormValuesFrom(raw: unknown): InstanceFormValues | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const src = raw as Record<string, unknown>
+  const out = {} as Record<keyof InstanceFormValues, string>
+  for (const key of Object.keys(EMPTY_INSTANCE_FORM) as (keyof InstanceFormValues)[]) {
+    const value = src[key]
+    if (typeof value !== 'string') return null
+    out[key] = value
+  }
+  if (out.method !== 'ssh' && out.method !== 'ssm') return null
+  return out as unknown as InstanceFormValues
+}
+
 /** Seed the form from an existing crew, so editing starts from what is stored. */
 export function instanceFormFromView(inst: InstanceView): InstanceFormValues {
   return {

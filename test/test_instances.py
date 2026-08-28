@@ -2092,6 +2092,95 @@ class TestHandlers:
         assert "token" not in _body(r)  # never serve a token we couldn't confirm
         assert "STALE_TOK" not in r.body.decode()
 
+    def test_connect_failure_promotes_the_diagnosis_verdict_to_a_top_level_code(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed connect names WHICH link broke where a client can read it.
+
+        The ladder's verdict already travels in ``diagnosis.code``, but the
+        dashboard's error journal reads a top-level ``code`` — so without the
+        promotion the one field that distinguishes "cannot SSH at all" from "SSH
+        works, the remote gateway is down" never reaches the surface that offers to
+        act on it. Only a NEGATIVE verdict is promoted: the stored diagnosis is the
+        last ladder run, so a stale ``ok`` must not be published as this call's
+        reason.
+        """
+        from kiro_crew.dashboard import handlers_instances as handlers
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+
+        def connect_returning(status):
+            class FakeMgr:
+                async def connect(self, iid):
+                    return status
+
+            return asyncio.run(
+                handlers.api_instances_connect(
+                    _FakeReq(_State(reg, FakeMgr()), match={"id": "cd-1"})
+                )
+            )
+
+        diagnosed = connect_returning(
+            TunnelStatus(
+                "cd-1",
+                TunnelState.ERROR,
+                error="tunnel failed",
+                diagnosis={
+                    "code": "ssh_unreachable",
+                    "ok": False,
+                    "reason": "Can't SSH to the host",
+                    "probes": [{"name": "ssh", "ok": False}],
+                },
+            )
+        )
+        assert diagnosed.status == 502 and _body(diagnosed)["code"] == "ssh_unreachable"
+
+        # No diagnosis on record — the response still names the stage that failed
+        # rather than leaving the client to parse prose.
+        undiagnosed = connect_returning(
+            TunnelStatus("cd-1", TunnelState.ERROR, error="tunnel failed")
+        )
+        assert undiagnosed.status == 502
+        assert _body(undiagnosed)["code"] == "instance_connect_failed"
+
+        # A stale healthy verdict is not this failure's reason.
+        stale_ok = connect_returning(
+            TunnelStatus(
+                "cd-1",
+                TunnelState.ERROR,
+                error="tunnel failed",
+                diagnosis={"code": "ok", "ok": True, "reason": "all good", "probes": []},
+            )
+        )
+        assert _body(stale_ok)["code"] == "instance_connect_failed"
+
+    def test_connect_missing_manager_and_unknown_id_carry_codes(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+
+        no_mgr = asyncio.run(
+            handlers.api_instances_connect(_FakeReq(_State(reg), match={"id": "cd-1"}))
+        )
+        assert no_mgr.status == 503
+        assert _body(no_mgr)["code"] == "instances_manager_unavailable"
+
+        class MissingMgr:
+            async def connect(self, iid):
+                raise KeyError(iid)
+
+        ghost = asyncio.run(
+            handlers.api_instances_connect(
+                _FakeReq(_State(reg, MissingMgr()), match={"id": "ghost"})
+            )
+        )
+        assert ghost.status == 404 and _body(ghost)["code"] == "instance_not_found"
+
     def test_status_404(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard import handlers_instances as handlers
 
@@ -2171,6 +2260,44 @@ class TestHandlers:
         assert asyncio.run(handlers.api_instances_add(_FakeReq(state))).status == 400
         # body not an object -> 400
         assert asyncio.run(handlers.api_instances_add(_FakeReq(state, body=["x"]))).status == 400
+
+    def test_add_error_bodies_carry_a_machine_readable_code(self, tmp_path, monkeypatch):
+        """Every add rejection names its cause in ``code``, not only in prose.
+
+        The dashboard reads this field (``utils/errorReport``'s ``parseErrorCode``)
+        to attach the failure's cause to an agent hand-off, and a first-time setup
+        rejection is exactly the case where the user cannot diagnose it alone. A
+        duplicate is kept distinct from an invalid field because the two are
+        different user actions — rename versus correct — and a client that cannot
+        tell them apart has to match on prose.
+        """
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        state = _State(self._reg(tmp_path))
+        body = {"name": "CD", "ssh_host": "cd-1-alias", "id": "cd-1"}
+        assert asyncio.run(handlers.api_instances_add(_FakeReq(state, body=body))).status == 201
+
+        dup = asyncio.run(handlers.api_instances_add(_FakeReq(state, body=body)))
+        assert dup.status == 400 and _body(dup)["code"] == "instance_duplicate"
+
+        no_json = asyncio.run(handlers.api_instances_add(_FakeReq(state)))
+        assert no_json.status == 400 and _body(no_json)["code"] == "invalid_json"
+
+        not_object = asyncio.run(handlers.api_instances_add(_FakeReq(state, body=["x"])))
+        assert not_object.status == 400 and _body(not_object)["code"] == "invalid_body"
+
+        bad_field = asyncio.run(
+            handlers.api_instances_add(
+                _FakeReq(state, body={"name": "Bad", "ssh_host": "h", "remote_port": "not-a-port"})
+            )
+        )
+        assert bad_field.status == 400 and _body(bad_field)["code"] == "invalid_field"
+
+        rejected = asyncio.run(
+            handlers.api_instances_add(_FakeReq(state, body={"name": "", "ssh_host": ""}))
+        )
+        assert rejected.status == 400 and _body(rejected)["code"] == "instance_invalid"
 
     def test_update_paths(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard import handlers_instances as handlers

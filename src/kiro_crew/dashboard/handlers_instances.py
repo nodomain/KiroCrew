@@ -267,9 +267,11 @@ async def api_instances_add(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be an object"}, status=400)
+        return web.json_response(
+            {"error": "body must be an object", "code": "invalid_body"}, status=400
+        )
     try:
         inst = await asyncio.to_thread(
             reg.add,
@@ -285,12 +287,20 @@ async def api_instances_add(request: web.Request) -> web.Response:
             aws_region=str(body.get("aws_region", "")),
             instance_id=body.get("id"),
         )
-    except (DuplicateInstanceError, InvalidInstanceError) as e:
+    except DuplicateInstanceError as e:
+        # Split from InvalidInstanceError because the two are different user
+        # actions: a name collision is resolved by renaming, a rejected field by
+        # correcting it. A client that cannot tell them apart has to parse prose.
         _audit("add", "denied", error=str(e))
-        return web.json_response({"error": str(e)}, status=400)
+        return web.json_response({"error": str(e), "code": "instance_duplicate"}, status=400)
+    except InvalidInstanceError as e:
+        _audit("add", "denied", error=str(e))
+        return web.json_response({"error": str(e), "code": "instance_invalid"}, status=400)
     except (TypeError, ValueError) as e:
         _audit("add", "denied", error=str(e))
-        return web.json_response({"error": f"invalid field: {e}"}, status=400)
+        return web.json_response(
+            {"error": f"invalid field: {e}", "code": "invalid_field"}, status=400
+        )
     _audit("add", "success", request_id=inst.id)
     return web.json_response(_instance_view(state, inst), status=201)
 
@@ -545,6 +555,25 @@ async def api_instances_remove(request: web.Request) -> web.Response:
     return web.json_response({"removed": instance_id})
 
 
+def _connect_failure_code(body: dict, fallback: str) -> str:
+    """Machine-readable ``code`` for a failed connect response.
+
+    Promotes the failure-diagnosis ladder's own verdict (``ssh_unreachable``,
+    ``remote_down``, ``tunnel_down``, …) to the top level, where a client reads
+    it without walking into ``diagnosis``. Only a verdict that is present AND
+    negative is promoted: the stored diagnosis is the last ladder RUN, so a stale
+    ``ok`` from before the failure would otherwise be published as this call's
+    reason. Without a usable verdict the caller's *fallback* names the stage that
+    failed instead.
+    """
+    diagnosis = body.get("diagnosis")
+    if isinstance(diagnosis, dict) and not diagnosis.get("ok"):
+        code = diagnosis.get("code")
+        if isinstance(code, str) and code:
+            return code
+    return fallback
+
+
 async def api_instances_connect(request: web.Request) -> web.Response:
     """POST /api/instances/{id}/connect — open tunnel + mint token.
 
@@ -559,12 +588,15 @@ async def api_instances_connect(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
         _audit("connect", "denied", request_id=instance_id, error="manager unavailable")
-        return web.json_response({"error": "instances manager not running"}, status=503)
+        return web.json_response(
+            {"error": "instances manager not running", "code": "instances_manager_unavailable"},
+            status=503,
+        )
     try:
         status = await mgr.connect(instance_id)
     except KeyError:
         _audit("connect", "denied", request_id=instance_id, error="not found")
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "instance_not_found"}, status=404)
     body = status.to_dict()
     if status.state.value == "connected":
         token = mgr.get_token(instance_id)
@@ -590,11 +622,13 @@ async def api_instances_connect(request: web.Request) -> web.Response:
                     error="token unconfirmed and re-mint failed",
                 )
                 body["error"] = "token expired and re-mint failed"
+                body["code"] = _connect_failure_code(body, "instance_token_unconfirmed")
                 return web.json_response(body, status=502)
         body["token"] = token  # delivered to owner only
         _audit("connect", "success", request_id=instance_id)
         return web.json_response(body)
     _audit("connect", "failure", request_id=instance_id, error=status.error)
+    body["code"] = _connect_failure_code(body, "instance_connect_failed")
     return web.json_response(body, status=502)
 
 

@@ -58,9 +58,12 @@ export default function AskAgentButton({
   /** Force a full page load (crash fallbacks, where the live tree is suspect). */
   hard?: boolean
   /**
-   * Called after the hand-off is staged. For callers that render inside a
-   * modal: the soft navigation does not unmount the modal's owner, so the
-   * modal would sit over the chat the hand-off lands on — close it here.
+   * Called immediately BEFORE the hand-off navigates, while this subtree is
+   * still mounted. Two uses:
+   *  - persist state the navigation would destroy (a form the user half-filled,
+   *    which on a save-failure banner is by definition not saved anywhere else);
+   *  - close a modal — a soft navigation does not unmount the modal's owner, so
+   *    it would otherwise sit over the chat the hand-off lands on.
    */
   onHandoff?: () => void
   className?: string
@@ -78,8 +81,13 @@ export default function AskAgentButton({
     const resolved: ErrorReport | { message: string } | null =
       report ?? findReport(message) ?? (message ? { message } : null)
     if (!resolved) return
+    // BEFORE the hand-off, not after: `sendErrorToChat` navigates, and the
+    // navigation unmounts the subtree this button was rendered in. A caller with
+    // state worth keeping (a half-filled form) has to persist it while that
+    // subtree is still alive, so this is its only usable moment. Guarded, so a
+    // throwing callback cannot strand the diagnostic it was preparing for.
+    try { onHandoff?.() } catch { /* a bad callback must not strand the hand-off */ }
     sendErrorToChat(askAgentPrompt(resolved), { hard })
-    onHandoff?.()
   }
 
   const base = 'inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors'

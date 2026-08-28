@@ -84,6 +84,40 @@ describe('InstancesPanel', () => {
     )
   })
 
+  it('keeps a typed add-form draft across the error hand-off, and drops it once the crew exists', async () => {
+    // The hand-off navigates to the chat, unmounting this form — and a rejected
+    // ADD means the crew was NOT persisted, so the fields the user typed exist
+    // nowhere else. Stashing them in the pre-navigation window is what makes the
+    // agent hand-off safe to offer on a form at all.
+    ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, instances: [], warm_set_cap: 5 })
+    ;vi.mocked(api.addInstance).mockRejectedValue(new ApiError(400, 'name already in use'))
+    const u = userEvent.setup()
+    const first = renderWithProviders(<InstancesPanel />)
+
+    await screen.findByText(/No remote crews configured yet/i)
+    await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Nimbus')
+    await u.type(screen.getByPlaceholderText('host-1-alias'), 'nimbus-alias')
+    await u.click(screen.getByRole('button', { name: 'Add remote crew' }))
+
+    await screen.findByText(/name already in use/i)
+    await u.click(screen.getByRole('button', { name: /agent/i }))
+    first.unmount()
+
+    // Coming back from the chat: the form re-mounts seeded from the stash.
+    renderWithProviders(<InstancesPanel />)
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText('Remote Host 1')).toHaveValue('Nimbus'),
+    )
+    expect(screen.getByPlaceholderText('host-1-alias')).toHaveValue('nimbus-alias')
+
+    // A successful add retires the draft — otherwise the NEXT add would open
+    // pre-filled with the crew that was just created.
+    ;vi.mocked(api.addInstance).mockResolvedValue({})
+    await u.click(screen.getByRole('button', { name: 'Add remote crew' }))
+    await waitFor(() => expect(api.addInstance).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByPlaceholderText('Remote Host 1')).toHaveValue(''))
+  })
+
   it('allows adding an instance whose remote port matches another (#1972)', async () => {
     // Two stock installs necessarily report the SAME default remote port. The
     // local forward port is allocated independently, so this is a supported

@@ -40,6 +40,8 @@ import InstanceTabBar, { visibleInstanceTabs, useCrewPins, toggleCrewPin, useCre
 import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
+import AskAgentButton from './AskAgentButton'
+import { instanceFailureMessage, reportInstanceFailure } from '../utils/instanceFailureReport'
 import { isElectron, isLinuxFramelessElectron, isWinElectron } from '../lib/electron'
 import type { DragGap } from '../lib/dragGaps'
 import { useFocusMode, useFocusChromeVisible, setFocusModeEnabled, setFocusChromeVisible } from '../hooks/useFocusMode'
@@ -523,6 +525,33 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // embedded switcher is a black pane with NO tabs — the local header is
   // display:none while a remote tab is active, so the user would be stranded.
   const showLoading = !showPanel && activeId !== null && !!warm[activeId] && !activeReady
+  // Journal the failure this panel is about to show, so its hand-off carries the
+  // diagnosis ladder instead of the one sentence on screen. Recorded here rather
+  // than by the API client because the panel's evidence arrives on a SUCCESSFUL
+  // poll: `status.error` and the ladder verdict ride a 200, and the auto-warm
+  // connect that failed earlier swallowed its own rejection. Placed above the
+  // early return below so the hook order cannot depend on what is warm.
+  useEffect(() => {
+    if (!showPanel || !activeId) return
+    const inst = instancesQuery.data?.instances.find(i => i.id === activeId)
+    // A connect in flight is not a failure. Without this the transient
+    // `connecting` state would journal as its own distinct signature, so every
+    // Retry would leave a phantom entry between the real ones.
+    if (inst?.status?.state === 'connecting') return
+    reportInstanceFailure({
+      id: activeId,
+      name: inst?.name || activeId,
+      transport: inst?.connection_method === 'ssm' ? 'ssm' : 'ssh',
+      status: inst?.status,
+      stage: activeTimedOut ? 'pane_load' : 'connect',
+      // The watchdog case has no backend error string at all — the tunnel claims
+      // connected while the pane never loaded — so name that state explicitly
+      // rather than journaling nothing for the one failure with no visible cause.
+      fallbackMessage: activeTimedOut
+        ? i18nT('components.instancesViewport.pane_failed_to_load')
+        : '',
+    })
+  }, [showPanel, activeId, activeTimedOut, instancesQuery.data])
   if (embedded || (warmIds.length === 0 && !showPanel)) return null
 
   const nameFor = (id: string) =>
@@ -533,6 +562,16 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     (connectMutation.isPending && connectMutation.variables === activeId) ||
     panelState === 'connecting'
   const panelError = activeInst?.status?.error || activeInst?.status?.diagnosis?.reason || ''
+  // Derived from the same rule the report was keyed on, never re-implemented here:
+  // the journal lookup is an exact message match, so a locally-computed variant
+  // would resolve to nothing and strip the ladder off the hand-off. The watchdog
+  // case supplies its own text because the tunnel reports connected while the pane
+  // never loaded — the one failure with no backend string, and the one least
+  // self-explanatory.
+  const panelHandoffMessage = instanceFailureMessage(
+    activeInst?.status,
+    activeTimedOut ? i18nT('components.instancesViewport.pane_failed_to_load') : '',
+  )
 
   return (
     <div
@@ -670,6 +709,12 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               >
                 <RefreshCw size={13} className={panelConnecting ? 'animate-spin' : ''} /> {i18nT('components.instancesViewport.retry')}
               </button>
+              {/* Retry stays primary — a momentary drop is worth one press. This is
+                  the other half: a first connect fails on SSH config, a remote
+                  gateway that is not running, a wrong port or an SSM instance
+                  profile, and none of those change between two presses. Nothing to
+                  stash: the panel holds no input. */}
+              {!panelConnecting && <AskAgentButton message={panelHandoffMessage} />}
               <div className="text-[11px] text-muted">
                 {i18nT('components.instancesViewport.this_tab_stays_until_you_disconnect_the_instance')}
               </div>
