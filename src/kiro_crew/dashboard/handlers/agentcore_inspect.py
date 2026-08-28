@@ -18,8 +18,6 @@ import logging
 
 from aiohttp import web
 
-from kiro_crew.platform.agentcore_inspect import inspect_snapshot, synchronize_target
-
 logger = logging.getLogger(__name__)
 
 OP_GET = "agentcore.gateway.get"
@@ -79,11 +77,40 @@ def _refuse_non_owner(request: web.Request, operation: str) -> web.Response | No
     return None
 
 
+def _refuse_disabled_capability(request: web.Request, operation: str) -> web.Response | None:
+    """Fail closed when the effective ceiling does not permit AgentCore."""
+    from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY, governance_permits
+
+    try:
+        decision = governance_permits(
+            "capabilities.agentcore",
+            "",
+            session_key=HOST_SESSION_KEY,
+            fail_closed=True,
+            log_warning=False,
+        )
+    except Exception:
+        _audit(request, operation=operation, outcome="denied", error="governance_unavailable")
+        return web.json_response(
+            {"error": "AgentCore identity is disabled", "code": "agentcore_disabled"},
+            status=403,
+        )
+    if not bool(getattr(decision, "permitted", False)):
+        _audit(request, operation=operation, outcome="denied", error="capability_disabled")
+        return web.json_response(
+            {"error": "AgentCore identity is disabled", "code": "agentcore_disabled"},
+            status=403,
+        )
+    return None
+
+
 async def api_agentcore_gateway_get(request: web.Request) -> web.Response:
     """GET /api/agentcore/gateway — live catalog + checks."""
-    refused = _refuse_non_owner(request, OP_GET)
+    refused = _refuse_non_owner(request, OP_GET) or _refuse_disabled_capability(request, OP_GET)
     if refused is not None:
         return refused
+    from kiro_crew.platform.agentcore_inspect import inspect_snapshot
+
     payload = await asyncio.to_thread(inspect_snapshot, include_tools=True)
     _audit(
         request,
@@ -96,9 +123,13 @@ async def api_agentcore_gateway_get(request: web.Request) -> web.Response:
 
 async def api_agentcore_gateway_verify(request: web.Request) -> web.Response:
     """POST /api/agentcore/gateway/verify — same snapshot, operator-asked."""
-    refused = _refuse_non_owner(request, OP_VERIFY)
+    refused = _refuse_non_owner(request, OP_VERIFY) or _refuse_disabled_capability(
+        request, OP_VERIFY
+    )
     if refused is not None:
         return refused
+    from kiro_crew.platform.agentcore_inspect import inspect_snapshot
+
     payload = await asyncio.to_thread(inspect_snapshot, include_tools=True)
     _audit(
         request,
@@ -111,7 +142,7 @@ async def api_agentcore_gateway_verify(request: web.Request) -> web.Response:
 
 async def api_agentcore_gateway_sync(request: web.Request) -> web.Response:
     """POST /api/agentcore/gateway/sync — SynchronizeGatewayTargets one target."""
-    refused = _refuse_non_owner(request, OP_SYNC)
+    refused = _refuse_non_owner(request, OP_SYNC) or _refuse_disabled_capability(request, OP_SYNC)
     if refused is not None:
         return refused
     try:
@@ -132,6 +163,8 @@ async def api_agentcore_gateway_sync(request: web.Request) -> web.Response:
             {"error": "target_id is required", "code": "invalid_target"},
             status=400,
         )
+    from kiro_crew.platform.agentcore_inspect import synchronize_target
+
     result = await asyncio.to_thread(synchronize_target, raw.strip())
     code = str(result.get("code") or "aws_error")
     if code == "accepted":

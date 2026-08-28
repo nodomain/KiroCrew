@@ -914,17 +914,17 @@ def _extra_mcp_servers() -> dict[str, dict]:
 
 
 def _merge_edition_mcp(mcp: dict[str, Any]) -> None:
-    """Merge edition extras + the AgentCore Gateway rebuild contribution.
+    """Merge edition extras and retract any persisted Gateway entry.
 
     Extras are ADD-only (setdefault) after secret keys are stripped so a
     companion ``Authorization`` header cannot land in kirocrew.json. The
-    Gateway server itself is ours: workload posture assigns a URL-only spec;
-    any other posture retracts a leftover entry. Login withhold of other
-    remotes is a later PR.
+    Gateway is session-injected, never written into the agent file, so a
+    profile that disabled AgentCore cannot inherit it from ``--agent``.
+    Any leftover entry is retracted. Login withhold of other remotes is a
+    later PR.
     """
     from kiro_crew.platform.agentcore_gateway import (
         GATEWAY_SERVER_NAME,
-        rebuild_gateway_contribution,
         strip_secret_spec_keys,
     )
 
@@ -932,11 +932,7 @@ def _merge_edition_mcp(mcp: dict[str, Any]) -> None:
         if name == GATEWAY_SERVER_NAME or not isinstance(spec, dict):
             continue
         mcp.setdefault(name, strip_secret_spec_keys(spec))
-    contribution = rebuild_gateway_contribution()
-    if GATEWAY_SERVER_NAME in contribution:
-        mcp[GATEWAY_SERVER_NAME] = contribution[GATEWAY_SERVER_NAME]
-    else:
-        mcp.pop(GATEWAY_SERVER_NAME, None)
+    mcp.pop(GATEWAY_SERVER_NAME, None)
 
 
 def _extra_mcp_scope_globals() -> list[Path]:

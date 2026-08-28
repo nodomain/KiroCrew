@@ -6,6 +6,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
@@ -183,25 +184,78 @@ def test_proxy_signs_and_forwards_to_local_upstream(
         return headers
 
     monkeypatch.setattr(sigv4, "sign_aws_request", _fake_sign)
+    monkeypatch.setattr(sigv4, "_workload_proxy_still_permitted", lambda: True)
     proxy = sigv4.GatewaySigV4Proxy(upstream_url, region="us-east-1", require_https=False)
     try:
         listen = proxy.start()
         assert listen.startswith("http://127.0.0.1:")
-        req = Request(
+        bare = Request(
             listen,
             data=b'{"jsonrpc":"2.0"}',
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urlopen(
-            req, timeout=5
-        ) as resp:  # noqa: S310 — loopback test  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        with pytest.raises(HTTPError) as denied:
+            urlopen(bare, timeout=5)  # noqa: S310  # nosemgrep
+        assert denied.value.code == 401
+        req = Request(
+            listen,
+            data=b'{"jsonrpc":"2.0"}',
+            headers={
+                "Content-Type": "application/json",
+                sigv4.PROXY_AUTH_HEADER: proxy.client_token,
+            },
+            method="POST",
+        )
+        with urlopen(req, timeout=5) as resp:  # noqa: S310  # nosemgrep
             body = json.loads(resp.read().decode())
         assert body == {"ok": True}
         assert seen["path"] == "/mcp"
         assert seen["body"] == b'{"jsonrpc":"2.0"}'
         assert seen["x-test-signed"] == "1"
         assert seen["authorization"] == "AWS4-HMAC-SHA256 Credential=test"
+        assert seen.get("x-kirocrew-proxy-auth") is None
+    finally:
+        proxy.stop()
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_proxy_refuses_after_capability_revoked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.platform import agentcore_sigv4 as sigv4
+
+    class _Upstream(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            self.send_error(500, "should not be reached")
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _Upstream)
+    thread = Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    host, port = upstream.server_address[:2]
+    monkeypatch.setattr(sigv4, "sign_aws_request", lambda **_k: {})
+    monkeypatch.setattr(sigv4, "_workload_proxy_still_permitted", lambda: False)
+    proxy = sigv4.GatewaySigV4Proxy(
+        f"http://{host}:{port}/mcp", region="us-east-1", require_https=False
+    )
+    try:
+        listen = proxy.start()
+        req = Request(
+            listen,
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                sigv4.PROXY_AUTH_HEADER: proxy.client_token,
+            },
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as denied:
+            urlopen(req, timeout=5)  # noqa: S310  # nosemgrep
+        assert denied.value.code == 403
     finally:
         proxy.stop()
         upstream.shutdown()
@@ -213,4 +267,12 @@ def test_ensure_workload_proxy_refuses_non_https() -> None:
 
     reset_workload_proxy()
     assert ensure_workload_proxy("http://127.0.0.1/mcp") is None
+    reset_workload_proxy()
+
+
+def test_ensure_workload_proxy_refuses_non_gateway_https() -> None:
+    from kiro_crew.platform.agentcore_sigv4 import ensure_workload_proxy, reset_workload_proxy
+
+    reset_workload_proxy()
+    assert ensure_workload_proxy("https://evil.example.test/mcp") is None
     reset_workload_proxy()

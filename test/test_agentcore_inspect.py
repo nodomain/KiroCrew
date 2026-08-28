@@ -497,14 +497,18 @@ def _handler_isolate(monkeypatch: pytest.MonkeyPatch) -> None:
         "_refuse_non_owner",
         lambda request, operation: None,
     )
+    monkeypatch.setattr(
+        handler,
+        "_refuse_disabled_capability",
+        lambda request, operation: None,
+    )
 
 
 @pytest.mark.asyncio
 async def test_handler_get_returns_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     _handler_isolate(monkeypatch)
     monkeypatch.setattr(
-        handler,
-        "inspect_snapshot",
+        "kiro_crew.platform.agentcore_inspect.inspect_snapshot",
         lambda include_tools=True: {"code": "ok", "targets": [], "tools": {"items": []}},
     )
     resp = await handler.api_agentcore_gateway_get(_Req())
@@ -518,6 +522,25 @@ async def test_handler_app_token_refused(monkeypatch: pytest.MonkeyPatch) -> Non
     resp = await handler.api_agentcore_gateway_get(_Req(app="bot"))
     assert resp.status == 403
     assert json.loads(resp.text)["code"] == "dashboard_user_required"
+
+
+@pytest.mark.asyncio
+async def test_handler_refuses_when_capability_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handler, "_audit", lambda *a, **k: None)
+    monkeypatch.setattr(handler, "_refuse_non_owner", lambda request, operation: None)
+
+    class _Denied:
+        permitted = False
+
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance_profiles.governance_permits",
+        lambda *a, **k: _Denied(),
+    )
+    resp = await handler.api_agentcore_gateway_get(_Req())
+    assert resp.status == 403
+    assert json.loads(resp.text)["code"] == "agentcore_disabled"
 
 
 @pytest.mark.asyncio

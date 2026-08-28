@@ -672,11 +672,15 @@ def _mcp_post(
     host = (urlparse(url).hostname or "").lower()
     if host not in _LOCAL_MCP_HOSTS:
         raise ValueError("inspect MCP post is localhost-only (SigV4 proxy)")
+    from kiro_crew.platform.agentcore_sigv4 import PROXY_AUTH_HEADER, workload_proxy_auth_token
+
+    token = workload_proxy_auth_token()
+    if not token:
+        raise RuntimeError("SigV4 proxy auth token is missing")
+    headers[PROXY_AUTH_HEADER] = token
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-            request, timeout=TOOLS_LIST_TIMEOUT_SECS
-        ) as resp:
+        with urllib.request.urlopen(request, timeout=TOOLS_LIST_TIMEOUT_SECS) as resp:  # nosemgrep
             return dict(resp.headers.items()), resp.read()
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:

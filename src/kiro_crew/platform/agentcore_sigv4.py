@@ -13,9 +13,12 @@ import when the extra is not installed.
 from __future__ import annotations
 
 import contextlib
+import hmac
 import http.client
 import logging
 import os
+import re
+import secrets
 import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,7 +37,14 @@ PROXY_PREFERRED_PORT = 18765
 PROXY_PORT_ENV = "KIROCREW_AGENTCORE_PROXY_PORT"
 PROXY_BODY_MAX_BYTES = 16 * 1024 * 1024
 PROXY_SOCKET_TIMEOUT_SECS = 300.0
+# Per-boot token carried only in session-inject headers. Loopback is
+# same-host, not same-UID; without this the sandboxed agent can curl the
+# port and receive instance-role SigV4.
+PROXY_AUTH_HEADER = "X-Kirocrew-Proxy-Auth"
 _GATEWAY_HOST_MARKER = ".gateway.bedrock-agentcore."
+_GATEWAY_HOST_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.gateway\.bedrock-agentcore\.[a-z0-9-]+\.amazonaws\.com$"
+)
 _HOP_BY_HOP = frozenset(
     {
         "connection",
@@ -52,6 +62,7 @@ _HOP_BY_HOP = frozenset(
         "x-amz-security-token",
         "x-amz-content-sha256",
         "accept-encoding",
+        PROXY_AUTH_HEADER.lower(),
     }
 )
 _ALLOWED_METHODS = frozenset({"GET", "POST", "DELETE", "HEAD"})
@@ -78,6 +89,21 @@ def preferred_bind_port() -> int:
     if 1 <= port <= 65535:
         return port
     return PROXY_PREFERRED_PORT
+
+
+def is_agentcore_gateway_url(url: str) -> bool:
+    """True for an https AgentCore Gateway MCP hostname.
+
+    The proxy signs with the instance role. An arbitrary https URL would
+    receive those SigV4 headers, so only
+    ``*.gateway.bedrock-agentcore.<region>.amazonaws.com`` is a legal
+    upstream.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.username or parsed.password or parsed.fragment:
+        return False
+    host = (parsed.hostname or "").lower()
+    return _GATEWAY_HOST_RE.fullmatch(host) is not None
 
 
 def region_from_gateway_url(url: str) -> str:
@@ -150,6 +176,7 @@ class GatewaySigV4Proxy:
         if not self._region:
             raise ValueError("AgentCore Gateway SigV4 needs a region")
         self._require_https = require_https
+        self.client_token = secrets.token_urlsafe(32)
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._listen_url = ""
@@ -242,6 +269,13 @@ class GatewaySigV4Proxy:
                 self._handle()
 
             def _handle(self) -> None:
+                presented = self.headers.get(PROXY_AUTH_HEADER) or ""
+                if not _auth_token_matches(presented, proxy.client_token):
+                    self.send_error(401, "Unauthorized")
+                    return
+                if not _workload_proxy_still_permitted():
+                    self.send_error(403, "Forbidden")
+                    return
                 method = self.command.upper()
                 if method not in _ALLOWED_METHODS:
                     self.send_error(405, "Method Not Allowed")
@@ -293,13 +327,11 @@ class GatewaySigV4Proxy:
             handler.send_error(502, "Bad Gateway")
             return
         if parsed.scheme == "https":
-            conn: http.client.HTTPConnection = (
-                http.client.HTTPSConnection(  # nosemgrep: python.lang.security.audit.httpsconnection-detected.httpsconnection-detected
-                    parsed.hostname or "",
-                    parsed.port or 443,
-                    timeout=PROXY_SOCKET_TIMEOUT_SECS,
-                    context=ssl.create_default_context(),
-                )
+            conn: http.client.HTTPConnection = http.client.HTTPSConnection(  # nosemgrep
+                parsed.hostname or "",
+                parsed.port or 443,
+                timeout=PROXY_SOCKET_TIMEOUT_SECS,
+                context=ssl.create_default_context(),
             )
         else:
             conn = http.client.HTTPConnection(
@@ -335,7 +367,7 @@ class GatewaySigV4Proxy:
 def ensure_workload_proxy(upstream_url: str) -> str | None:
     """Start (or reuse) the process-wide workload proxy. ``None`` fails closed."""
     global _PROXY
-    if not upstream_url.startswith("https://"):
+    if not is_agentcore_gateway_url(upstream_url):
         return None
     try:
         import botocore  # noqa: F401
@@ -372,3 +404,46 @@ def reset_workload_proxy() -> None:
         if _PROXY is not None:
             _PROXY.stop()
             _PROXY = None
+
+
+def workload_proxy_auth_token() -> str | None:
+    """Per-boot proxy token, or ``None`` when the listener is down."""
+    with _LOCK:
+        if _PROXY is None or not _PROXY.alive:
+            return None
+        return _PROXY.client_token
+
+
+def _workload_proxy_still_permitted() -> bool:
+    """True only when the live ceiling still enables a known AgentCore posture.
+
+    Rechecked on every hop so a mid-process revocation stops signing
+    even though the proxy listener is already up. Fail closed.
+    """
+    try:
+        from kiro_crew.platform.context import current_context
+        from kiro_crew.platform.governance import agentcore_posture
+        from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY, governance_permits
+
+        decision = governance_permits(
+            "capabilities.agentcore",
+            "",
+            session_key=HOST_SESSION_KEY,
+            fail_closed=True,
+            log_warning=False,
+        )
+        if not bool(getattr(decision, "permitted", False)):
+            return False
+        return agentcore_posture(current_context().governance) is not None
+    except Exception:
+        return False
+
+
+def _auth_token_matches(presented: str, expected: str) -> bool:
+    if not presented or not expected:
+        return False
+    left = presented.encode("utf-8")
+    right = expected.encode("utf-8")
+    if len(left) != len(right):
+        return False
+    return hmac.compare_digest(left, right)
