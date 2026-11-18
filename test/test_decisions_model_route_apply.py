@@ -637,8 +637,12 @@ class TestArmingIsAnOwnerAction:
         copy carries the owner predicate itself. Asserted on the source because the
         defect is an ABSENT condition on one assignment."""
         import kiro_crew.dashboard.chat_fork as fork
+        import kiro_crew.dashboard.chat_fork_child as fork_child
 
-        source = Path(fork.__file__).read_text(encoding="utf-8")
+        # The child is shaped in chat_fork_child, split from chat_fork.
+        source = Path(fork.__file__).read_text(encoding="utf-8") + Path(
+            fork_child.__file__
+        ).read_text(encoding="utf-8")
         # The wrapper answers the owner predicate; the shared core applies it.
         assert (
             "jev_route_allowed=is_owner_dashboard_request(request)" in source

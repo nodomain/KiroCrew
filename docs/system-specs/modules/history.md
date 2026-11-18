@@ -1580,9 +1580,15 @@ no longer destroy older turns.
   transcript while engaging neither guarantee the modes make (`is_restricted`,
   `blocks_reads`). What an ORDINARY fork must not do is produce a *persistent*
   child from a restricted parent -- that would hand no-write content to
-  consolidation -- so the request body carries no `memory_mode` and the
-  parent's value is the only source; promotion (below) is the one deliberate,
-  consent-gated exception. A temporary child still receives its copied turns:
+  consolidation -- so the request body's optional `memory_mode` may only
+  TIGHTEN the parent's (`fork_memory_mode.requested_fork_memory_mode`: the
+  parent's mode or a stricter one by `MEMORY_MODES` order; a looser one answers
+  400 `memory_mode_cannot_loosen`, an unknown one 400 `invalid_memory_mode`,
+  before any child exists). `fork_slot` births the child with
+  `stricter_memory_mode(parent, requested)` and binds its execution through
+  `ExecutionContext.with_mode`, which only tightens. This is how an app forks a
+  slot it owns into a `temporary` child that reads no memory. Promotion (below)
+  is the one deliberate, consent-gated exception. A temporary child still receives its copied turns:
   `build_session_context` assembles the thread-history block before any
   `blocks_reads` gate. The response and the `chat.slot_fork` audit event both
   report the inherited (or, for a promotion, forced) mode. The inherited value

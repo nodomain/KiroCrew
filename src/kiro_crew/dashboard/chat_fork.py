@@ -13,17 +13,13 @@ from aiohttp import web
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_identity
 from kiro_crew.dashboard import transcript_snapshot
 from kiro_crew.dashboard.chat_folders import _unhide_folder
+from kiro_crew.dashboard.chat_fork_child import FORK_DIRECTION_TAIL, _shape_fork_child
 from kiro_crew.dashboard.chat_persistence import (
     _coerce_requested_mode,
     save_slot_off_loop,
     session_was_deleted,
 )
-from kiro_crew.dashboard.chat_title import (
-    _TITLE_ORIGIN_AUTO,
-    _TITLE_ORIGIN_USER,
-    FORK_TITLE_MARKER,
-    _counts_as_user_turn,
-)
+from kiro_crew.dashboard.chat_title import _counts_as_user_turn
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
     drained_to_thread,
@@ -31,14 +27,10 @@ from kiro_crew.dashboard.chat_utils import (
     history_corpus_unreadable,
     slot_history_key,
 )
+from kiro_crew.dashboard.fork_memory_mode import requested_fork_memory_mode
 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-from kiro_crew.dashboard.mate_folders import inherited_folder
 from kiro_crew.dashboard.relay_archive import is_relay_archive
-from kiro_crew.dashboard.slot_buffers import (
-    MAX_FORK_PARENT_KEY_CHARS,
-    bounded_transcript_created_at,
-)
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
@@ -56,6 +48,7 @@ from kiro_crew.dashboard.transcript_snapshot import (
     SnapshotUnstable,
     read_consistent_transcript,
 )
+from kiro_crew.execution_context import stricter_memory_mode
 from kiro_crew.history import carry_provenance
 from kiro_crew.history_projection import drop_persisted_tail_prefix as _drop_persisted_tail_prefix
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -69,7 +62,7 @@ logger = logging.getLogger(__name__)
 # Fork direction: "head" copies messages up to and including the fork point
 # (the default); "tail" copies only the messages after it.
 _FORK_DIRECTION_HEAD = "head"
-_FORK_DIRECTION_TAIL = "tail"
+_FORK_DIRECTION_TAIL = FORK_DIRECTION_TAIL
 _FORK_DIRECTIONS = (_FORK_DIRECTION_HEAD, _FORK_DIRECTION_TAIL)
 _MAX_MESSAGE_ID_CHARS = 256
 
@@ -142,7 +135,9 @@ def _fork_execution_context(
     return execution.with_mode(memory_mode)
 
 
-def _bind_fork_execution(source, child_key: str, execution, promote: bool = False) -> None:
+def _bind_fork_execution(
+    source, child_key: str, execution, promote: bool = False, tighten_to: str = ""
+) -> None:
     from kiro_crew.execution_context import bind_session_execution, source_vouch_agrees
     from kiro_crew.memory_stores import UnknownMemoryStore
 
@@ -158,6 +153,9 @@ def _bind_fork_execution(source, child_key: str, execution, promote: bool = Fals
     # the vouch compares.
     if promote:
         execution = execution.promoted_to_persistent()
+    elif tighten_to:
+        # ``with_mode`` only tightens, so a requested floor can never loosen it.
+        execution = execution.with_mode(tighten_to)
     bind_session_execution(child_key, execution, vouch=source_vouch_agrees(source[0], execution))
 
 
@@ -382,7 +380,8 @@ async def api_chat_slot_fork(
     An optional ``prompt`` is returned so the frontend can send it.
 
     Body: ``{ at_message_index?: number, at_message_id?: string, prompt?: string,
-    mode?: string, direction?: "head"|"tail" }``
+    mode?: string, direction?: "head"|"tail", memory_mode?: string }``
+    (``memory_mode`` only tightens the inherited mode, see ``fork_memory_mode``).
 
     ``_promote_from_ephemeral`` is an internal-only, keyword-only escape
     hatch -- never reachable from an HTTP body -- and is the ONE consent-gated
@@ -444,8 +443,8 @@ async def api_chat_slot_fork(
     # mode before any row is copied. Neither branch persists restricted bodies,
     # and the request cannot loosen the inherited mode.
     # An ordinary fork never LOOSENS the mode: the child inherits the parent's,
-    # and the request body carries no way to pick one. Promotion (below) is the
-    # one consent-gated exception.
+    # and the body can only tighten it. Promotion (below) is the one
+    # consent-gated exception.
     if _promote_from_ephemeral and slot.memory_mode == "persistent":
         # The dashboard only offers "Keep this chat" on an ephemeral slot; a
         # persistent slot reaching here has nothing to promote.
@@ -510,6 +509,9 @@ async def api_chat_slot_fork(
             },
             status=400,
         )
+    memory_mode_floor = requested_fork_memory_mode(body, slot.memory_mode)
+    if isinstance(memory_mode_floor, web.Response):
+        return memory_mode_floor
     direction = body.get("direction", _FORK_DIRECTION_HEAD)
     if direction not in _FORK_DIRECTIONS:
         return web.json_response(
@@ -575,6 +577,7 @@ async def api_chat_slot_fork(
         # never get it: pinned marks a session as human-owned.
         stamp=_inherit_pin(source.slot),
         audit_operation=_operation,
+        memory_mode_floor=memory_mode_floor,
         _promote_from_ephemeral=_promote_from_ephemeral,
     )
     if isinstance(result, web.Response):
@@ -589,103 +592,10 @@ async def api_chat_slot_fork(
             "folder_id": result.slot.folder_id or None,
             "pinned": result.slot.pinned,
             "direction": result.direction,
-            # The mode the child was born with (always the parent's), so the tab
-            # can render the incognito/temporary badge before the slots refresh.
+            # The mode the child was born with (the parent's or a stricter one), so
+            # the tab can render the incognito/temporary badge before the slots refresh.
             "memory_mode": result.slot.memory_mode,
         }
-    )
-
-
-def _shape_fork_child(
-    new_slot: "_ChatSlot",
-    slot: "_ChatSlot",
-    *,
-    direction: str,
-    jev_route_allowed: bool,
-    folders: list[dict[str, Any]],
-    folder_principal: str,
-    promote: bool = False,
-) -> None:
-    """Copy onto the just-minted *new_slot* what it inherits from its parent *slot*.
-
-    *folders* is the committed folder tree and *folder_principal* the forker's
-    folder principal: a parent filed in a mate's home the forker may not write
-    into hands the child no folder.
-
-    Synchronous and assignment-only. :func:`fork_slot` runs it in the
-    push-suspended window that began at the mint, so the child's first
-    ``slots`` frame already shows the folder, tags, color and fork title set here.
-    ``promote`` titles the child as a kept copy ("Keep this chat") instead
-    of a fork.
-    """
-    forked_from = effective_session_key(slot)
-    if len(forked_from) <= MAX_FORK_PARENT_KEY_CHARS:
-        new_slot.forked_from = forked_from
-        new_slot.forked_from_created_at = bounded_transcript_created_at(slot._disk_meta_created_at)
-    # Keep the namespace that made the parent's alias-or-template decision. The
-    # execution carrier alone cannot preserve it: a template-stamped alias and
-    # an alias mistakenly stored as a template id share one carrier shape on
-    # disk. Saving the stamp on the child lets a later read tell them apart.
-    new_slot.agent_kind = str(getattr(slot, "agent_kind", "") or "")
-    new_slot.reasoning_effort = slot.reasoning_effort
-    # Inherited beside the model it belongs to: the constructor takes `model` and
-    # the routing choice is the other half of the same answer, so a fork of an
-    # "Auto (decision model)" session that arrived pinned would run the parent's next turns
-    # on a model the parent had explicitly stopped choosing by hand.
-    # Inheriting is arming a SECOND routed session, so it answers to the same owner
-    # predicate as the arm itself; the caller says whether it passed that predicate.
-    new_slot.jev_route = slot.jev_route and jev_route_allowed
-    # Inherit the active project directory so the fork keeps the parent's working
-    # context (agent resolution, steering files, CWD) instead of falling back to
-    # the config/workspace default on first message.
-    new_slot.project = slot.project
-    # Keep the app-owned agent binding with the agent it binds: the fork runs as
-    # the same app agent, so the per-turn shadow check must still apply to it.
-    new_slot.app_agent_owner = slot.app_agent_owner
-    # Inherit the sidebar folder so the fork appears next to its parent in the UI,
-    # unless it is a mate's home (or inside one) the forker may not file into.
-    new_slot.folder_id = inherited_folder(folders, slot.folder_id, folder_principal)
-    # Inherit tags (copied, so later edits to either slot's list stay independent).
-    new_slot.tags = list(slot.tags)
-    # "tags changed => revision changed": the slot was constructed with an empty
-    # list under its birth revision; a snapshot of that newborn state (a slot
-    # fetch racing the fork) must not share a revision with the inherited list,
-    # or a delayed empty frame could become a client's next toggle base.
-    new_slot.bump_tags_revision()
-    # Inherit the sidebar color so the fork stays in its parent's color group;
-    # either one can still be recolored on its own.
-    new_slot.color_index = slot.color_index
-    new_slot.color_hex = slot.color_hex
-    parent_title = slot.title if slot._titled else "Untitled"
-    parent_title, _ = redact_exfiltration_urls(parent_title)
-    parent_title, _ = redact_credentials(parent_title)
-    # Strip a leading marker from the parent so it never compounds on a
-    # fork-of-a-fork.
-    parent_title = parent_title.removeprefix(FORK_TITLE_MARKER)
-    if promote:
-        # Keep the prefix short: the sidebar row truncates, and a long
-        # "Kept from private chat:" prefix fills the whole row before the
-        # parent title starts, so every promoted session reads identically
-        # there. "Kept:" leaves room for the title that actually distinguishes
-        # them. The keep dialog carries the "from a private chat" detail.
-        fork_word = "Kept:"
-    elif direction == _FORK_DIRECTION_TAIL:
-        fork_word = "Tail of"
-    else:
-        fork_word = "Fork of"
-    new_slot.title = f"{FORK_TITLE_MARKER}{fork_word} {parent_title}"
-    new_slot._titled = True
-    # The fork name is derived, not typed: it stays inside the automatic title
-    # lifecycle (refreshable, and renamed from the first message the person
-    # sends the child, see chat_title_fork.fork_title_pending) unless the name it
-    # wraps is final. A parent with a manual name, or a legacy one, hands the
-    # child a final title too. Persisted by the birth save, so a reload keeps
-    # the provenance instead of treating the fork name as an untyped legacy
-    # title.
-    new_slot._title_origin = (
-        _TITLE_ORIGIN_USER
-        if slot._titled and slot._title_origin != _TITLE_ORIGIN_AUTO
-        else _TITLE_ORIGIN_AUTO
     )
 
 
@@ -708,6 +618,7 @@ async def fork_slot(
     stamp: "Callable[[_ChatSlot], None] | None" = None,
     recheck: "Callable[[], None] | None" = None,
     reveal_folder: bool = True,
+    memory_mode_floor: str = "",
     _promote_from_ephemeral: bool = False,
 ) -> "ForkResult | web.Response":
     """Copy *source*'s transcript up to (or after) the fork point into a new slot.
@@ -746,6 +657,9 @@ async def fork_slot(
     eligibility, the source's addressability, the folder's existence -- true at
     the act rather than at the moment they were first read, across the
     suspensions this function takes for the transcript read and the memory bind.
+
+    ``memory_mode_floor`` (a validated mode, or ``""``) tightens the inherited
+    mode: the child gets the stricter of the two.
 
     ``reveal_folder`` says whether a hidden folder the child is filed into is
     un-hidden once the fork is acknowledged. The human route leaves it True: a
@@ -1267,6 +1181,9 @@ async def fork_slot(
     try:
         inherited_store = inherited_execution.store.legacy_name
         inherited_memory_mode = inherited_execution.memory_mode
+        child_memory_mode = stricter_memory_mode(
+            inherited_memory_mode, memory_mode_floor or inherited_memory_mode
+        )
         if not _source_identity_unchanged():
             raise UnknownMemoryStore("The fork source changed while its memory was verified")
     except (OSError, ValueError) as exc:
@@ -1303,7 +1220,7 @@ async def fork_slot(
             # mode: "Keep this chat" exists precisely to LOOSEN it, so the child is
             # forced to "persistent" here rather than carrying the ephemeral
             # parent's mode forward onto what is supposed to be the kept copy.
-            memory_mode="persistent" if _promote_from_ephemeral else inherited_memory_mode,
+            memory_mode="persistent" if _promote_from_ephemeral else child_memory_mode,
             app=request_app,
             origin=origin,
             count_user_session=count_user_session,
@@ -1314,6 +1231,8 @@ async def fork_slot(
                 # Promotion binds the child as persistent (the mode it is becoming),
                 # not the ephemeral parent's, so its metadata reads back correctly.
                 bind = _bind_fork_execution
+                if child_memory_mode != inherited_memory_mode:
+                    bind = partial(_bind_fork_execution, tighten_to=child_memory_mode)
                 if _promote_from_ephemeral:
                     bind = partial(_bind_fork_execution, promote=True)
                 await drained_to_thread(

@@ -2483,6 +2483,25 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/chat/slots/{slot}/question/answer` | Answer or decline an owned slot's blocking question (needs `permissions.sessionApproval`) |
 | POST | `/api/member-records/{slug}` | Append one record to a Bot's Dashboard fold (needs the `/api/member-records/*` grant; see [Member records](#member-records)) |
 
+### Forking your own slots
+
+`POST /api/chat/slots/{slot}/fork` (covered by `/api/chat/slots/*`) forks a slot
+your app owns; a slot it does not own answers 404. The child is your app's slot too
+and is born with the parent's `memory_mode`. The body may name a `memory_mode` to
+**tighten** it, never to loosen it: `persistent` < `incognito` < `temporary`.
+
+| Body field | Meaning |
+|---|---|
+| `at_message_index` / `at_message_id` | Fork point; omitted, the whole transcript is copied |
+| `direction` | `"head"` (default, up to the fork point) or `"tail"` (after it) |
+| `prompt` | Echoed back for the caller to send |
+| `memory_mode` | The parent's mode or a stricter one. A looser one answers 400 `memory_mode_cannot_loosen`; an unknown one 400 `invalid_memory_mode` |
+
+A `temporary` child reads no memory and writes none, so forking a persistent slot
+into `{"memory_mode": "temporary"}` gives a copy whose turns cannot recall what the
+owner's memory holds. The response's `memory_mode` is the mode the child was born
+with.
+
 ### App Management
 
 | Method | Path | Description |
