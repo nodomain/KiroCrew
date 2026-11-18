@@ -2529,7 +2529,7 @@ chat stays invisible to you. The three owner routes below are dashboard-only: an
 |--------|------|-------------|
 | GET | `/api/chat/share-targets` | The apps a chat can be shared into: `{apps: [{name, display_name}]}` |
 | POST | `/api/chat/slots/{slot}/share-to-app/preview` | Body `{app}`. Answers `{rows, held: [{index, role, reasons, excerpt}], digest, memory_mode}`; creates nothing |
-| POST | `/api/chat/slots/{slot}/share-to-app` | Body `{app, digest, release?: [index]}`. Answers `{key, app, messages, memory_mode, held, released}`. Refusals: 409 `share_preview_stale`, `share_target_not_eligible`, `share_source_owned_by_app`, `slot_cap_reached`; 400 `share_preview_required`, `share_release_not_held` |
+| POST | `/api/chat/slots/{slot}/share-to-app` | Body `{app, digest, release?: [index]}`. Answers `{key, app, messages, memory_mode, held, released}`. Refusals: 409 `share_preview_stale`, `share_target_not_eligible`, `share_source_owned_by_app`, `slot_cap_reached`; 400 `share_preview_required`, `share_release_not_held`; 503 `share_filter_unavailable` when the filter cannot run (nothing is copied) |
 
 ### App Management
 

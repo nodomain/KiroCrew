@@ -1659,7 +1659,11 @@ no longer destroy older turns.
   policy through `redact_via_context`) and a SHA-256 `digest` over slot, app,
   roles, contents and verdicts. The share's callback recomputes it and refuses a
   mismatch (409 `share_preview_stale`), so only the previewed transcript is
-  copied; `release` may name only held rows (400 `share_release_not_held`). A
+  copied; `release` may name only held rows (400 `share_release_not_held`).
+  Fail-closed: a filter that raises answers 503 `share_filter_unavailable`
+  from the callback, before a child is minted, so nothing is copied. The rule
+  set's shared vectors live in `test/test_chat_share_privacy_vectors.py`; the
+  Crew Commons and Crew Rooms copies of the rules are kept in step with it. A
   held, unreleased row becomes `[held by the privacy filter: <reasons>]`, and
   every copied row is role, content and `ts` only, no `meta`. The child is owned
   by the app (`app=`, `origin=request_slot_origin(app)`), forced to

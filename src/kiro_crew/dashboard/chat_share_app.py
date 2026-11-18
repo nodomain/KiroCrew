@@ -161,8 +161,38 @@ async def _read_share_request(
     return slot, app_name, body
 
 
-def _verdicts(rows: list[dict]) -> list[tuple[str, ...]]:
-    return [held_reasons(str(row.get("content", "") or "")) for row in rows]
+def _verdicts(
+    rows: list[dict], slot_key: str, app_name: str, operation: str
+) -> "list[tuple[str, ...]] | web.Response":
+    """Every row's held reasons, or the refusal when the filter cannot run.
+
+    Fail-closed: a filter that raises (a host whose credential policy cannot be
+    composed, a broken pattern) refuses the share. Nothing is copied, because the
+    refusal is answered from ``select_rows``, before ``fork_slot`` mints a child.
+    """
+    try:
+        return [held_reasons(str(row.get("content", "") or "")) for row in rows]
+    except Exception:
+        logger.warning(
+            "chat_share_app: the privacy filter failed for slot=%s; refusing the share",
+            slot_key,
+            exc_info=True,
+        )
+        sel().log_api_access(
+            caller="dashboard",
+            operation=operation,
+            outcome="error",
+            source="dashboard",
+            resources=f"slot={slot_key},app={app_name}",
+            error="privacy filter failed; share refused",
+        )
+        return web.json_response(
+            {
+                "error": "the privacy filter could not check this chat, so nothing was shared",
+                "code": "share_filter_unavailable",
+            },
+            status=503,
+        )
 
 
 def _digest(slot_key: str, app_name: str, rows: list[dict], verdicts: list[tuple[str, ...]]) -> str:
@@ -217,7 +247,9 @@ async def api_chat_slot_share_preview(request: web.Request) -> web.Response:
         return source
 
     def _preview(rows: list[dict]) -> web.Response:
-        verdicts = _verdicts(rows)
+        verdicts = _verdicts(rows, slot.key, app_name, PREVIEW_AUDIT_OPERATION)
+        if isinstance(verdicts, web.Response):
+            return verdicts
         held = [
             {
                 "index": index,
@@ -305,7 +337,9 @@ async def api_chat_slot_share(request: web.Request) -> web.Response:
     counts = {"held": 0, "released": 0}
 
     def _filtered(rows: list[dict]) -> "list[dict] | web.Response":
-        verdicts = _verdicts(rows)
+        verdicts = _verdicts(rows, slot.key, app_name, SHARE_AUDIT_OPERATION)
+        if isinstance(verdicts, web.Response):
+            return verdicts
         if _digest(slot.key, app_name, rows, verdicts) != digest:
             return web.json_response(
                 {

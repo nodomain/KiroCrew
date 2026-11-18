@@ -100,6 +100,24 @@ def test_the_filter_holds_secrets_and_personal_data_and_names_only_reasons() -> 
     assert placeholder.startswith("[held by the privacy filter: ")
 
 
+# ── fail closed ──
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["share-to-app/preview", "share-to-app"])
+async def test_a_filter_that_raises_refuses_and_copies_nothing(tmp_path, monkeypatch, path) -> None:
+    state = _seed(tmp_path, monkeypatch)
+
+    def _broken(_text: str) -> tuple[str, ...]:
+        raise RuntimeError("policy could not be composed")
+
+    monkeypatch.setattr(chat_share_app, "held_reasons", _broken)
+    before = set(state._slots)
+    status, body = await _post(state, f"/api/chat/slots/src/{path}", {"app": APP, "digest": "x"})
+    assert (status, body["code"]) == (503, "share_filter_unavailable")
+    assert set(state._slots) == before
+
+
 # ── preview ──
 
 
