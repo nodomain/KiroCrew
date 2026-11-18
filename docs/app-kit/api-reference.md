@@ -248,6 +248,7 @@ session stays the person's: the record grants your app nothing.
 | `hide` | `readonly ChatEmbedHideKey[]` | none | Parts of the embed not to mount (see [Hiding parts](#hiding-parts)). |
 | `renderers` | `readonly MessageRenderer[]` | none | Transcript row renderers, handed to the embed's `ChatMessageList` and merged over the built-ins (see [Restyling rows](#restyling-rows)). |
 | `proseFences` | `readonly string[]` | none | Fence tags the transcript draws wrapped, as it draws `markdown` and `text` fences. The tag is the first word of the info string, matched without regard to case. Use it for a fence your app defines for prose or a record, such as a proposed reply. Other fences keep their horizontal scroll. |
+| `onTyping` | `(typing: boolean) => void` | none | Called when the person starts and stops typing in the composer, for presence such as "X is typing". It carries no text (see [Typing presence](#typing-presence)). |
 
 ### Restyling rows
 
@@ -479,6 +480,22 @@ covers sends from the embed itself and from any other surface (another tab, a
 scheduled job). The cards are read-only in the embed: to cancel or edit a queued
 message, open the session in the dashboard. Finished sub-agent results waiting
 for the same turn show as one progress line instead of cards.
+
+#### Typing presence
+
+`onTyping` tells the host when the person is writing a draft, never what it says:
+its only argument is a boolean. It is debounced to transitions. `onTyping(true)`
+fires once when an edit starts a typing spell, and `onTyping(false)` once when the
+spell ends: 3 seconds after the last edit, when the draft
+becomes empty (a send or a clear), when `slotKey` changes, and on unmount. Only the
+person's own edits count; a draft the embed puts back by itself (a failed send handed
+back, a slot's saved draft) does not start a spell. The embed stores and sends
+nothing for it, so a host that shares presence with others (Crew Rooms) sends the
+flag itself and keeps it out of any stored record.
+
+```tsx
+<ChatEmbed slotKey={slot} onTyping={typing => presence.setTyping(typing)} />
+```
 
 #### Live updates (`slotPush`)
 

@@ -73,6 +73,7 @@ import EmbedQuestionCard, { useEmbedPendingQuestion } from './EmbedQuestionCard'
 import ChatFooter from '../pages/chat/ChatFooter'
 import { deriveFollowUpOptions } from './protocol'
 import { useComposerDraft } from './useComposerDraft'
+import { useEmbedTyping } from './useEmbedTyping'
 import { useStopPress, type StopPhase } from '../chat-core/stop/useStopPress'
 import { sendEmbedStop } from './embedStopTransport'
 import { StopControls } from '../components/chat-input/StopControls'
@@ -226,6 +227,15 @@ export interface ChatEmbedProps {
    * Omitted, only the built-in prose tags wrap.
    */
   proseFences?: readonly string[]
+  /**
+   * Called when the person starts (`true`) and stops (`false`) typing in the
+   * composer, so a host can show presence ("X is typing"). It carries no text.
+   * Debounced to transitions: one `true` per typing spell, one `false` when it
+   * ends, 3 s after the last edit, when the draft empties (a send or clear),
+   * when `slotKey` changes, or on unmount. A draft the embed restores on its
+   * own does not count as typing (`useEmbedTyping`). Omitted, nothing is tracked.
+   */
+  onTyping?: (typing: boolean) => void
 }
 
 /** Stable empty transcript. A fresh `[]` fallback would be a new identity on every
@@ -437,6 +447,7 @@ function ChatEmbed({
   hide,
   renderers,
   proseFences,
+  onTyping,
 }: ChatEmbedProps) {
   const api = useAppApi()
   const hidden = (key: ChatEmbedHideKey) => hide?.includes(key) === true
@@ -786,7 +797,12 @@ function ChatEmbed({
    *  as the first edit after a slot switch, which it would otherwise take for
    *  the parent restoring that slot's draft (`useUndoHistory`). */
   const draftFromUserRef = useRef(false)
-  const setDraftFromUser = useCallback((value: string) => { draftFromUserRef.current = true; setDraft(value) }, [setDraft])
+  const noteTypingEdit = useEmbedTyping(onTyping, draft, slotKey)
+  const setDraftFromUser = useCallback((value: string) => {
+    draftFromUserRef.current = true
+    setDraft(value)
+    noteTypingEdit(value)
+  }, [setDraft, noteTypingEdit])
   const { pickers, onFileSelect: onPickedFile, removeFile: removeChip, anchorRef: pickerAnchorRef } = useEmbedPickers({
     api, appName, slotKey, agent, draft, setDraft: setDraftFromUser, textareaRef, stage: attachments.stage, removeFile,
   })
@@ -1607,7 +1623,7 @@ function ChatEmbed({
               aria-label={i18nT('appSdk.chatEmbed.chat_message')}
               aria-describedby={pasteEditor.pastePreviewPanelId ?? undefined}
               className={`relative block w-full min-h-[38px] resize-none overflow-y-auto [scrollbar-gutter:stable] ${EMBED_EDITOR_TYPO} bg-transparent border-border rounded-md text-text outline-hidden focus-visible:border-accent transition-colors`}
-              onEdit={(value, caret) => { draftFromUserRef.current = true; openPickersForText(value, value.slice(0, caret)) }}
+              onEdit={(value, caret) => { draftFromUserRef.current = true; noteTypingEdit(value); openPickersForText(value, value.slice(0, caret)) }}
               onKeyDown={e => {
                 // Tells the list continuation which keydown made the next line
                 // break, so an IME's commit Enter does not start a list item.
