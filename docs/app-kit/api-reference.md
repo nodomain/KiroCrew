@@ -2500,7 +2500,8 @@ and is born with the parent's `memory_mode`. The body may name a `memory_mode` t
 A `temporary` child reads no memory and writes none, so forking a persistent slot
 into `{"memory_mode": "temporary"}` gives a copy whose turns cannot recall what the
 owner's memory holds. The response's `memory_mode` is the mode the child was born
-with.
+with. Check it: a gateway that predates this field ignores it, and the child then
+keeps the parent's mode.
 
 ### Receiving a chat the owner shares
 
