@@ -14,6 +14,7 @@ from aiohttp import web
 from kiro_crew.dashboard import (
     chat,
     chat_follow_default,
+    chat_share_app,
     chat_threads,
     handlers,
     limit_continue,
@@ -242,6 +243,13 @@ def register(app: web.Application) -> None:
     # untouched. Dashboard-only, human-initiated; no MCP/CLI surface — see
     # chat_fork.api_chat_slot_promote.
     app.router.add_post("/api/chat/slots/{slot}/promote", chat.api_chat_slot_promote)
+    # Share a chat into an app: an owner-only, filtered temporary copy the app
+    # owns; the app never reads the source. See chat_share_app.
+    app.router.add_get("/api/chat/share-targets", chat_share_app.api_chat_share_targets)
+    app.router.add_post(
+        "/api/chat/slots/{slot}/share-to-app/preview", chat_share_app.api_chat_slot_share_preview
+    )
+    app.router.add_post("/api/chat/slots/{slot}/share-to-app", chat_share_app.api_chat_slot_share)
     app.router.add_post("/api/chat/slots/{slot}/side/open", handlers.api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", handlers.api_side_turn)
     app.router.add_post("/api/chat/slots/{slot}/side/stop", handlers.api_side_stop)

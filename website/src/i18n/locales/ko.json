@@ -14147,7 +14147,20 @@
       "comments_sent_other": "{{count}}개의 댓글이 전송되었습니다",
       "your_crewmate": "Bot",
       "jump_to_new_other": "새 메시지 {{count}}개 · 최신으로",
-      "could_not_repair_images": "이미지를 복구하지 못했습니다"
+      "could_not_repair_images": "이미지를 복구하지 못했습니다",
+      "share_into_app": "앱에 공유",
+      "share_into_app_none": "채팅을 받을 수 있는 앱이 없습니다",
+      "share_into_app_title": "이 채팅을 {{app}}에 공유할까요?",
+      "share_into_app_body": "{{app}}은(는) 이 채팅의 임시 사본을 받습니다. 사본은 내 메모리를 읽거나 저장할 수 없으며, {{app}}은(는) 원본을 볼 수 없습니다.",
+      "share_into_app_loading": "채팅을 확인하는 중…",
+      "share_into_app_nothing_held": "개인정보 필터가 보류한 항목이 없습니다.",
+      "share_into_app_held": "개인정보 필터가 이 메시지를 보류했습니다. 선택하지 않으면 자리표시자로 공유됩니다.",
+      "share_into_app_release": "이 메시지도 그대로 공유",
+      "share_into_app_confirm": "공유",
+      "share_into_app_check_again": "다시 확인",
+      "share_into_app_done": "{{app}}에 공유했습니다.",
+      "share_into_app_failed": "이 채팅을 공유할 수 없습니다.",
+      "share_into_app_stale": "확인 후 채팅이 변경되었습니다. 다시 확인하세요."
     },
     "chatSidebar": {
       "needsMeCard": {

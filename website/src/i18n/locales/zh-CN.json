@@ -14147,7 +14147,20 @@
       "comments_sent_other": "{{count}} 条评论已发送",
       "your_crewmate": "你的 Bot",
       "jump_to_new_other": "{{count}} 条新 · 跳到最新",
-      "could_not_repair_images": "无法修复图片"
+      "could_not_repair_images": "无法修复图片",
+      "share_into_app": "分享到应用",
+      "share_into_app_none": "没有可以接收聊天的应用",
+      "share_into_app_title": "将此聊天分享到 {{app}}？",
+      "share_into_app_body": "{{app}} 会收到此聊天的临时副本。副本无法读取或写入你的记忆，{{app}} 也永远看不到原始聊天。",
+      "share_into_app_loading": "正在检查聊天…",
+      "share_into_app_nothing_held": "隐私过滤器没有扣留任何内容。",
+      "share_into_app_held": "隐私过滤器扣留了这些消息。除非你勾选，否则它们将以占位符形式分享。",
+      "share_into_app_release": "仍然分享此消息",
+      "share_into_app_confirm": "分享",
+      "share_into_app_check_again": "重新检查",
+      "share_into_app_done": "已分享到 {{app}}。",
+      "share_into_app_failed": "无法分享此聊天。",
+      "share_into_app_stale": "检查后聊天已更改。请重新检查。"
     },
     "chatSidebar": {
       "needsMeCard": {

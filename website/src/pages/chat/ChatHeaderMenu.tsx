@@ -21,6 +21,7 @@ import { useAppSelector } from '../../store'
 import type { McpServer } from '../../types'
 import InitialPromptSubmenu from './InitialPromptSubmenu'
 import McpToolsPanel from './McpToolsPanel'
+import { ShareIntoAppDialog, ShareIntoAppSubmenu, type ShareTarget } from './ShareIntoApp'
 
 /** The session header's dropdown: reveal, rename, auto-title, mode, the MCP
  *  servers and initial-prompt submenus and the rest of SessionActionsMenu. Header chrome, so it
@@ -58,6 +59,9 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
   const [open, setOpen] = useState(false)
+  // The app picked under "Share into app": its dialog lives outside the menu,
+  // which unmounts its content when it closes.
+  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null)
   // MCP server list is fetched lazily when its submenu opens (driven by the
   // Radix Sub's open state).
   const [mcpOpen, setMcpOpen] = useState(false)
@@ -102,6 +106,8 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   )
 
   return (
+    <>
+    {activeSlot && <ShareIntoAppDialog slotKey={activeSlot} target={shareTarget} onClose={() => setShareTarget(null)} />}
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         {triggerLabel !== undefined ? (
@@ -173,6 +179,8 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
             // The session's first prompt, with Copy and "New session from this
             // prompt" (#25977). Read lazily from the start of the transcript.
             <InitialPromptSubmenu key="initial-prompt" slotKey={activeSlot} mode={mode} onStarted={() => setOpen(false)} />,
+            // Hand a filtered, temporary copy of this chat to an app the owner names.
+            <ShareIntoAppSubmenu key="share-into-app" onPick={t => { setOpen(false); setShareTarget(t) }} />,
           ]}
           layoutSlot={onSplitDown ? (
             <DropdownMenuItem key="split-down" onSelect={() => onSplitDown()}>
@@ -188,5 +196,6 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+    </>
   )
 }

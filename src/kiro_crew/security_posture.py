@@ -730,6 +730,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The fork child's title is shaped here (split from ``chat_fork.py``): the
         # same redactor calls under the same classification.
         "dashboard/chat_fork_child.py",
+        # Gate-side: the share-into-app filter runs the redactors only to decide
+        # whether a row is HELD, and returns reason names, never redacted text.
+        "dashboard/chat_share_privacy.py",
         # Inbound: the receiving half of the session transfer. An arrived bundle's
         # title, origin label and rows are scrubbed before they become a slot, its
         # transcript and its audit line, so this is inbound sanitisation rather than an

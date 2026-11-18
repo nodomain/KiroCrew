@@ -2502,6 +2502,34 @@ into `{"memory_mode": "temporary"}` gives a copy whose turns cannot recall what 
 owner's memory holds. The response's `memory_mode` is the mode the child was born
 with.
 
+### Receiving a chat the owner shares
+
+An app never reads a chat it does not own. The dashboard owner can instead share one
+of their chats into your app from the session menu ("Share into app"). Your app is
+offered there when it is enabled and `/api/chat/slots` is in its approved
+`permissions.api`. The gateway then:
+
+1. runs every row through the share privacy filter (private keys, bearer and access
+   tokens, credential assignments, e-mail addresses, home directories, IP addresses,
+   long hex and key-like strings, plus the gateway's own credential and exfiltration-URL
+   passes) and shows the owner which rows it held;
+2. lets the owner release single held rows, and refuses the share if the chat changed
+   since that preview;
+3. forks the chat into a new slot **your app owns**, always `memory_mode: "temporary"`
+   whatever the source's mode. A held row the owner did not release arrives as
+   `[held by the privacy filter: <reasons>]`. Rows carry their role, text and time
+   only, no `meta`.
+
+The new slot appears in your `GET /api/chat/slots` like any slot you own; the source
+chat stays invisible to you. The three owner routes below are dashboard-only: an app credential gets 403
+`share_requires_dashboard_user` (or 404 for a chat it does not own).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/chat/share-targets` | The apps a chat can be shared into: `{apps: [{name, display_name}]}` |
+| POST | `/api/chat/slots/{slot}/share-to-app/preview` | Body `{app}`. Answers `{rows, held: [{index, role, reasons, excerpt}], digest, memory_mode}`; creates nothing |
+| POST | `/api/chat/slots/{slot}/share-to-app` | Body `{app, digest, release?: [index]}`. Answers `{key, app, messages, memory_mode, held, released}`. Refusals: 409 `share_preview_stale`, `share_target_not_eligible`, `share_source_owned_by_app`, `slot_cap_reached`; 400 `share_preview_required`, `share_release_not_held` |
+
 ### App Management
 
 | Method | Path | Description |

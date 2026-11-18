@@ -6911,7 +6911,20 @@
       "comments_refused": "{{name}} didn’t receive these comments — send them again from the document. They’re still there.",
       "comments_refused_overlay": "{{name}} didn’t receive these comments — reopen the side panel and send them again. They’re still in the document.",
       "comments_sent_other": "{{count}} comments sent",
-      "your_crewmate": "Your bot"
+      "your_crewmate": "Your bot",
+      "share_into_app": "Share into app",
+      "share_into_app_none": "No app can receive a chat",
+      "share_into_app_title": "Share this chat into {{app}}?",
+      "share_into_app_body": "{{app}} gets a temporary copy of this chat. The copy cannot read or save to your memory, and {{app}} never sees the original.",
+      "share_into_app_loading": "Checking the chat…",
+      "share_into_app_nothing_held": "The privacy filter held nothing.",
+      "share_into_app_held": "The privacy filter held these messages. They are shared as a placeholder unless you tick them.",
+      "share_into_app_release": "Share this message anyway",
+      "share_into_app_confirm": "Share",
+      "share_into_app_check_again": "Check again",
+      "share_into_app_done": "Shared into {{app}}.",
+      "share_into_app_failed": "Could not share this chat.",
+      "share_into_app_stale": "The chat changed since the check. Check it again."
     },
     "chatSidebar": {
       "no_sessions_match_folders": "No sessions match — only a folder name did",

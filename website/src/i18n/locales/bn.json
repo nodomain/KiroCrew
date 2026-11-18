@@ -14488,7 +14488,20 @@
       "your_crewmate": "তোমার Bot",
       "jump_to_new_one": "{{count}}টি নতুন · সর্বশেষে যান",
       "jump_to_new_other": "{{count}}টি নতুন · সর্বশেষে যান",
-      "could_not_repair_images": "ছবিগুলো মেরামত করা যায়নি"
+      "could_not_repair_images": "ছবিগুলো মেরামত করা যায়নি",
+      "share_into_app": "অ্যাপে শেয়ার করুন",
+      "share_into_app_none": "কোনো অ্যাপ চ্যাট গ্রহণ করতে পারে না",
+      "share_into_app_title": "এই চ্যাটটি {{app}}-এ শেয়ার করবেন?",
+      "share_into_app_body": "{{app}} এই চ্যাটের একটি অস্থায়ী কপি পায়। কপিটি আপনার মেমরি পড়তে বা তাতে সংরক্ষণ করতে পারে না, এবং {{app}} কখনো মূল চ্যাট দেখে না।",
+      "share_into_app_loading": "চ্যাট পরীক্ষা করা হচ্ছে…",
+      "share_into_app_nothing_held": "গোপনীয়তা ফিল্টার কিছুই আটকায়নি।",
+      "share_into_app_held": "গোপনীয়তা ফিল্টার এই বার্তাগুলো আটকে রেখেছে। আপনি টিক না দিলে এগুলো প্লেসহোল্ডার হিসেবে শেয়ার হবে।",
+      "share_into_app_release": "তবুও এই বার্তাটি শেয়ার করুন",
+      "share_into_app_confirm": "শেয়ার করুন",
+      "share_into_app_check_again": "আবার পরীক্ষা করুন",
+      "share_into_app_done": "{{app}}-এ শেয়ার করা হয়েছে।",
+      "share_into_app_failed": "এই চ্যাটটি শেয়ার করা যায়নি।",
+      "share_into_app_stale": "পরীক্ষার পর চ্যাটটি বদলেছে। আবার পরীক্ষা করুন।"
     },
     "chatSidebar": {
       "needsMeCard": {

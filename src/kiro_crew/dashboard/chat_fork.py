@@ -619,6 +619,7 @@ async def fork_slot(
     recheck: "Callable[[], None] | None" = None,
     reveal_folder: bool = True,
     memory_mode_floor: str = "",
+    select_rows: "Callable[[list[dict]], list[dict] | web.Response] | None" = None,
     _promote_from_ephemeral: bool = False,
 ) -> "ForkResult | web.Response":
     """Copy *source*'s transcript up to (or after) the fork point into a new slot.
@@ -659,7 +660,10 @@ async def fork_slot(
     suspensions this function takes for the transcript read and the memory bind.
 
     ``memory_mode_floor`` (a validated mode, or ``""``) tightens the inherited
-    mode: the child gets the stricter of the two.
+    mode: the child gets the stricter of the two. ``select_rows``, when given,
+    sees the rows chosen for the copy before any child exists and returns the
+    rows to copy, or a finished response that ends the call with no child
+    (``chat_share_app`` filters and previews a share through it).
 
     ``reveal_folder`` says whether a hidden folder the child is filed into is
     un-hidden once the fork is acknowledged. The human route leaves it True: a
@@ -1152,6 +1156,11 @@ async def fork_slot(
             },
             status=400,
         )
+    if select_rows is not None:
+        selected = select_rows(visible)
+        if isinstance(selected, web.Response):
+            return selected
+        visible = selected
 
     # A fork of a member DM thread is an ordinary chat, never a second "member"
     # slot: the fork mints a chat-* key, so member mode would make it invisible

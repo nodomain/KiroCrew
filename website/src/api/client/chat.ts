@@ -343,6 +343,11 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     // No body: promotion always copies the WHOLE transcript with no prompt/mode
     // override (see chat_fork.api_chat_slot_promote), so there is nothing to narrow.
     promoteChatSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/promote', {}).then(j),
+    // Share a chat into an app (chat_share_app): the apps that can receive one,
+    // the privacy preview, and the share, which must echo the preview's digest.
+    chatShareTargets: () => fetch('/api/chat/share-targets').then(j) as Promise<{ ok: boolean; apps: { name: string; display_name: string }[] }>,
+    chatSharePreview: (slot: string, app: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/share-to-app/preview', { app }).then(j) as Promise<{ ok: boolean; rows: number; held: { index: number; role: string; reasons: string[]; excerpt: string }[]; digest: string; memory_mode: string }>,
+    chatShare: (slot: string, app: string, digest: string, release: number[]) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/share-to-app', { app, digest, release }).then(j) as Promise<{ ok: boolean; key: string; messages: number; held: number; released: number; memory_mode: string }>,
     sideOpen: async (slot: string) => {
       await waitForSideClose(slot)
       return post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/open', {}).then(j) as Promise<{ ok: boolean; open: boolean; messages: number; last_run_id: string; created_at: string }>

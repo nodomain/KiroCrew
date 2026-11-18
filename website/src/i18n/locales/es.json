@@ -14829,7 +14829,20 @@
       "jump_to_new_one": "{{count}} nuevo · Ir al final",
       "jump_to_new_other": "{{count}} nuevos · Ir al final",
       "jump_to_new_many": "{{count}} nuevos · Ir al final",
-      "could_not_repair_images": "No se pudieron reparar las imágenes"
+      "could_not_repair_images": "No se pudieron reparar las imágenes",
+      "share_into_app": "Compartir en una app",
+      "share_into_app_none": "Ninguna app puede recibir un chat",
+      "share_into_app_title": "¿Compartir este chat en {{app}}?",
+      "share_into_app_body": "{{app}} recibe una copia temporal de este chat. La copia no puede leer ni guardar en tu memoria, y {{app}} nunca ve el original.",
+      "share_into_app_loading": "Revisando el chat…",
+      "share_into_app_nothing_held": "El filtro de privacidad no retuvo nada.",
+      "share_into_app_held": "El filtro de privacidad retuvo estos mensajes. Se comparten como marcador salvo que los marques.",
+      "share_into_app_release": "Compartir este mensaje de todos modos",
+      "share_into_app_confirm": "Compartir",
+      "share_into_app_check_again": "Revisar de nuevo",
+      "share_into_app_done": "Compartido en {{app}}.",
+      "share_into_app_failed": "No se pudo compartir este chat.",
+      "share_into_app_stale": "El chat cambió desde la revisión. Revísalo de nuevo."
     },
     "chatSidebar": {
       "needsMeCard": {

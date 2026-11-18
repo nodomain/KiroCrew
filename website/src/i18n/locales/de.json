@@ -14488,7 +14488,20 @@
       "your_crewmate": "Dein Bot",
       "jump_to_new_one": "{{count}} neue · Zum Ende",
       "jump_to_new_other": "{{count}} neue · Zum Ende",
-      "could_not_repair_images": "Die Bilder konnten nicht repariert werden"
+      "could_not_repair_images": "Die Bilder konnten nicht repariert werden",
+      "share_into_app": "In App teilen",
+      "share_into_app_none": "Keine App kann einen Chat empfangen",
+      "share_into_app_title": "Diesen Chat in {{app}} teilen?",
+      "share_into_app_body": "{{app}} erhält eine temporäre Kopie dieses Chats. Die Kopie kann dein Gedächtnis weder lesen noch darin speichern, und {{app}} sieht das Original nie.",
+      "share_into_app_loading": "Chat wird geprüft…",
+      "share_into_app_nothing_held": "Der Datenschutzfilter hat nichts zurückgehalten.",
+      "share_into_app_held": "Der Datenschutzfilter hat diese Nachrichten zurückgehalten. Sie werden als Platzhalter geteilt, außer du hakst sie an.",
+      "share_into_app_release": "Diese Nachricht trotzdem teilen",
+      "share_into_app_confirm": "Teilen",
+      "share_into_app_check_again": "Erneut prüfen",
+      "share_into_app_done": "In {{app}} geteilt.",
+      "share_into_app_failed": "Der Chat konnte nicht geteilt werden.",
+      "share_into_app_stale": "Der Chat hat sich seit der Prüfung geändert. Prüfe ihn erneut."
     },
     "chatSidebar": {
       "needsMeCard": {

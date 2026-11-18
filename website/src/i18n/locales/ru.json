@@ -15170,7 +15170,20 @@
       "jump_to_new_few": "{{count}} новых · К последним",
       "jump_to_new_many": "{{count}} новых · К последним",
       "jump_to_new_other": "{{count}} новых · К последним",
-      "could_not_repair_images": "Не удалось восстановить изображения"
+      "could_not_repair_images": "Не удалось восстановить изображения",
+      "share_into_app": "Поделиться в приложении",
+      "share_into_app_none": "Ни одно приложение не может принять чат",
+      "share_into_app_title": "Поделиться этим чатом в {{app}}?",
+      "share_into_app_body": "{{app}} получит временную копию этого чата. Копия не может читать вашу память или сохранять в неё, а {{app}} никогда не видит оригинал.",
+      "share_into_app_loading": "Проверка чата…",
+      "share_into_app_nothing_held": "Фильтр конфиденциальности ничего не задержал.",
+      "share_into_app_held": "Фильтр конфиденциальности задержал эти сообщения. Они передаются как заглушка, если вы их не отметите.",
+      "share_into_app_release": "Всё равно поделиться этим сообщением",
+      "share_into_app_confirm": "Поделиться",
+      "share_into_app_check_again": "Проверить снова",
+      "share_into_app_done": "Передано в {{app}}.",
+      "share_into_app_failed": "Не удалось поделиться этим чатом.",
+      "share_into_app_stale": "Чат изменился после проверки. Проверьте его снова."
     },
     "chatSidebar": {
       "needsMeCard": {

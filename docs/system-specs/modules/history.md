@@ -1642,6 +1642,30 @@ no longer destroy older turns.
   (404) first, the same as for any other route. There is no MCP tool,
   no CLI command and no other endpoint that can reach
   `_promote_from_ephemeral=True`.
+- **Sharing a chat into an app** (`dashboard/chat_share_app.py`,
+  `GET /api/chat/share-targets`, `POST /api/chat/slots/{slot}/share-to-app/preview`
+  and `POST /api/chat/slots/{slot}/share-to-app`): the owner hands a filtered
+  copy of one of their chats to an app they name; the app never gets read on the
+  source. Owner only (`is_owner_dashboard_request`, else 403
+  `share_requires_dashboard_user`, SEL-audited); an app credential for a chat it
+  does not own is answered 404 by the slot-ownership check first. A target is
+  eligible when `app_token_path_allowed(app, "/api/chat/slots")` holds, which
+  also re-reads the owner-enable marker (409 `share_target_not_eligible`); a slot
+  an app owns cannot be shared on (409 `share_source_owned_by_app`). Both POSTs
+  run `fork_slot` with `select_rows`: the preview's callback answers before any
+  child is minted, listing the rows `chat_share_privacy.held_reasons` holds
+  (the Crew Commons secret and personal-data rule set restated in core, plus the
+  `redact_with_findings` credential and exfiltration-URL passes and the active
+  policy through `redact_via_context`) and a SHA-256 `digest` over slot, app,
+  roles, contents and verdicts. The share's callback recomputes it and refuses a
+  mismatch (409 `share_preview_stale`), so only the previewed transcript is
+  copied; `release` may name only held rows (400 `share_release_not_held`). A
+  held, unreleased row becomes `[held by the privacy filter: <reasons>]`, and
+  every copied row is role, content and `ts` only, no `meta`. The child is owned
+  by the app (`app=`, `origin=request_slot_origin(app)`), forced to
+  `memory_mode: "temporary"` through `memory_mode_floor` whatever the parent's
+  mode, is filed in no folder, unpinned and untagged, and arms no routed session.
+  Audited as `chat.slot_share_to_app` and `chat.slot_share_to_app_preview`.
 - **Member fork identity**: a V2 fork also inherits the parent's canonical
   execution context before the child receives copied history. The captured
   member/store identity must be valid; missing, damaged or mismatched identity

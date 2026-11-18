@@ -14488,7 +14488,20 @@
       "your_crewmate": "तुम्हारा Bot",
       "jump_to_new_one": "{{count}} नया · नवीनतम पर जाओ",
       "jump_to_new_other": "{{count}} नए · नवीनतम पर जाओ",
-      "could_not_repair_images": "छवियाँ ठीक नहीं की जा सकीं"
+      "could_not_repair_images": "छवियाँ ठीक नहीं की जा सकीं",
+      "share_into_app": "ऐप में साझा करें",
+      "share_into_app_none": "कोई ऐप चैट प्राप्त नहीं कर सकता",
+      "share_into_app_title": "यह चैट {{app}} में साझा करें?",
+      "share_into_app_body": "{{app}} को इस चैट की एक अस्थायी प्रति मिलती है। यह प्रति आपकी मेमोरी न पढ़ सकती है न उसमें सहेज सकती है, और {{app}} मूल चैट कभी नहीं देखता।",
+      "share_into_app_loading": "चैट की जाँच हो रही है…",
+      "share_into_app_nothing_held": "गोपनीयता फ़िल्टर ने कुछ नहीं रोका।",
+      "share_into_app_held": "गोपनीयता फ़िल्टर ने ये संदेश रोके हैं। जब तक आप इन्हें नहीं चुनते, ये प्लेसहोल्डर के रूप में साझा होंगे।",
+      "share_into_app_release": "फिर भी यह संदेश साझा करें",
+      "share_into_app_confirm": "साझा करें",
+      "share_into_app_check_again": "फिर से जाँचें",
+      "share_into_app_done": "{{app}} में साझा किया गया।",
+      "share_into_app_failed": "यह चैट साझा नहीं हो सकी।",
+      "share_into_app_stale": "जाँच के बाद चैट बदल गई। इसे फिर से जाँचें।"
     },
     "chatSidebar": {
       "needsMeCard": {
